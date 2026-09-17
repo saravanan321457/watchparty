@@ -1,6 +1,7 @@
 package com.example.watch_together
 
 import android.media.MediaPlayer
+import com.cloudwebrtc.webrtc.Mp4AudioExtractor
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -20,11 +21,23 @@ class MainActivity : FlutterActivity() {
                 if (player != null) {
                     try {
                         when (call.method) {
-                            "play"  -> { player.start(); result.success(null) }
-                            "pause" -> { player.pause(); result.success(null) }
+                            "play"  -> {
+                                player.start()
+                                // Resume audio extractor in sync with video
+                                Mp4AudioExtractor.instance.resume()
+                                result.success(null)
+                            }
+                            "pause" -> {
+                                player.pause()
+                                // Pause audio extractor in sync with video
+                                Mp4AudioExtractor.instance.pause()
+                                result.success(null)
+                            }
                             "seek"  -> {
                                 val ms = call.argument<Int>("position") ?: 0
                                 player.seekTo(ms)
+                                // Seek audio extractor to the same position
+                                Mp4AudioExtractor.instance.seekTo(ms.toLong())
                                 result.success(null)
                             }
                             "getPosition" -> result.success(player.currentPosition)

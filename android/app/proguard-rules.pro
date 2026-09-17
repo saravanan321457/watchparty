@@ -1,0 +1,2 @@
+-keep class com.cloudwebrtc.webrtc.Mp4Capturer { *; }
+-keep class com.cloudwebrtc.webrtc.Mp4AudioExtractor { *; }
