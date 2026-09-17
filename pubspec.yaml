@@ -34,7 +34,8 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  flutter_webrtc: ^1.6.2+hotfix.2
+  flutter_webrtc:
+    path: plugins/flutter_webrtc_custom
   web_socket_channel: ^3.0.3
   file_picker: ^10.3.3
   video_player: ^2.10.0
