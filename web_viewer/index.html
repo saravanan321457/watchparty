@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Watch Together Viewer</title>
+    <style>
+        body { margin: 0; background: #0b0c10; color: #fff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; min-height: 100vh; align-items: center; justify-content: center; }
+        .container { width: min(800px, 95vw); background: #1f2833; padding: 32px; border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+        h1 { margin-top: 0; text-align: center; color: #66fcf1; letter-spacing: 2px; }
+        .form-group { display: flex; gap: 12px; margin: 24px 0; }
+        input { flex: 1; padding: 14px; border-radius: 8px; border: 1px solid #45a29e; background: #0b0c10; color: #fff; font-size: 16px; text-transform: uppercase; letter-spacing: 4px; text-align: center; font-weight: bold; }
+        input:focus { outline: none; border-color: #66fcf1; box-shadow: 0 0 8px rgba(102, 252, 241, 0.4); }
+        button { padding: 14px 24px; border-radius: 8px; border: none; background: #45a29e; color: #0b0c10; font-weight: bold; font-size: 16px; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: #66fcf1; }
+        button:disabled { background: #333; color: #666; cursor: not-allowed; }
+        .status { text-align: center; padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); margin-bottom: 24px; font-weight: 500; }
+        .video-container { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.3); display: none; }
+        .video-container.active { display: block; }
+        video { width: 100%; height: 100%; object-fit: contain; }
+        .controls { display: none; margin-top: 24px; flex-direction: row; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.3); padding: 16px; border-radius: 12px; }
+        .controls.active { display: flex; }
+        .volume-control { display: flex; align-items: center; gap: 12px; flex: 1; }
+        input[type="range"] { flex: 1; accent-color: #66fcf1; }
+        #leave { background: transparent; border: 1px solid #ff4b4b; color: #ff4b4b; }
+        #leave:hover { background: #ff4b4b; color: #fff; }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <h1>WATCH TOGETHER</h1>
+        
+        <div class="status" id="status">Ready to connect</div>
+        
+        <div class="form-group" id="join-form">
+            <input id="room" maxlength="6" placeholder="ROOM CODE">
+            <button id="join">JOIN ROOM</button>
+        </div>
+
+        <div class="video-container" id="video-wrapper">
+            <video id="remote" playsinline></video>
+        </div>
+
+        <div class="controls" id="controls">
+            <div class="volume-control">
+                <span>🔊 Local Volume</span>
+                <input type="range" id="volume" min="0" max="1" step="0.05" value="1">
+            </div>
+            <button id="leave">LEAVE ROOM</button>
+        </div>
+    </main>
+
+    <script>
+        const URL = 'ws://192.168.1.61:8091';
+        const room = document.querySelector('#room');
+        const join = document.querySelector('#join');
+        const leave = document.querySelector('#leave');
+        const status = document.querySelector('#status');
+        const video = document.querySelector('#remote');
+        const videoWrapper = document.querySelector('#video-wrapper');
+        const controls = document.querySelector('#controls');
+        const joinForm = document.querySelector('#join-form');
+        const volume = document.querySelector('#volume');
+
+        let socket, pc, channel, remoteStream, remoteDescriptionSet = false, closing = false;
+        const pendingIce = [];
+
+        const set = (s, color = '#fff') => {
+            status.textContent = s;
+            status.style.color = color;
+        };
+        const send = o => { if(socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(o)); };
+
+        volume.oninput = (e) => { video.volume = e.target.value; };
+
+        async function ensurePeer() {
+            if (pc) return pc;
+            pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            
+            pc.onconnectionstatechange = () => {
+                if (pc.connectionState === 'connected') {
+                    set('Connection: CONNECTED', '#66fcf1');
+                    videoWrapper.classList.add('active');
+                    controls.classList.add('active');
+                    joinForm.style.display = 'none';
+                } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    set('Connection: LOST', '#ff4b4b');
+                }
+            };
+            
+            pc.onicecandidate = e => {
+                if (e.candidate && !closing) {
+                    send({ type: 'ice_candidate', candidate: { candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex }});
+                }
+            };
+            
+            pc.ondatachannel = e => setupChannel(e.channel);
+            
+            pc.ontrack = e => {
+                remoteStream ??= new MediaStream();
+                remoteStream.addTrack(e.track);
+                video.srcObject = remoteStream;
+            };
+            return pc;
+        }
+
+        function setupChannel(c) {
+            if (channel) return;
+            channel = c;
+            channel.onmessage = async e => {
+                try {
+                    const m = JSON.parse(e.data);
+                    const p = Number(m.positionMs || 0);
+                    if (m.type === 'play') {
+                        if (p >= 0) video.currentTime = p / 1000;
+                        await video.play();
+                    }
+                    if (m.type === 'pause') {
+                        await video.pause();
+                    }
+                    if (m.type === 'seek') {
+                        video.currentTime = p / 1000;
+                    }
+                } catch(err) { console.error('Control message failed', err) }
+            };
+        }
+
+        async function addIce(c) { try { await pc?.addIceCandidate(c); } catch(e) {} }
+        async function flushIce() { for (const c of pendingIce.splice(0)) await addIce(c); }
+
+        async function signal(data) {
+            if (closing) return;
+            try {
+                if (data.type === 'room_joined') {
+                    set('Connection: Joined. Waiting for host video...', '#66fcf1');
+                    return;
+                }
+                if (data.type === 'offer') {
+                    set('Connection: Connecting video...', '#ffcb9a');
+                    const p = await ensurePeer();
+                    await p.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+                    remoteDescriptionSet = true;
+                    await flushIce();
+                    const answer = await p.createAnswer();
+                    await p.setLocalDescription(answer);
+                    send({ type: 'answer', sdp: answer.sdp });
+                    return;
+                }
+                if (data.type === 'ice_candidate') {
+                    const c = data.candidate;
+                    if (!c) return;
+                    const ice = new RTCIceCandidate(c);
+                    if (!remoteDescriptionSet) { pendingIce.push(ice); return; }
+                    await addIce(ice);
+                    return;
+                }
+                if (data.type === 'host_left') {
+                    set('Connection: Host closed the room.', '#ff4b4b');
+                    setTimeout(closeSession, 3000);
+                }
+                if (data.type === 'error') {
+                    set(data.message, '#ff4b4b');
+                    join.disabled = false;
+                    room.disabled = false;
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        function connect() {
+            return new Promise((resolve, reject) => {
+                socket = new WebSocket(URL);
+                socket.onopen = resolve;
+                socket.onerror = reject;
+                socket.onclose = () => { if (!closing) set('Connection lost.', '#ff4b4b'); };
+                socket.onmessage = e => signal(JSON.parse(e.data));
+            });
+        }
+
+        async function joinRoom() {
+            const id = room.value.trim().toUpperCase();
+            if (!id) return alert('Enter a room code');
+            join.disabled = true;
+            room.disabled = true;
+            set('Connecting...', '#ffcb9a');
+            try {
+                await connect();
+                send({ type: 'join_room', roomId: id });
+            } catch(e) {
+                set('Could not connect to server.', '#ff4b4b');
+                join.disabled = false;
+                room.disabled = false;
+            }
+        }
+
+        async function closeSession() {
+            closing = true;
+            try {
+                channel?.close();
+                pc?.getReceivers().forEach(r => r.track?.stop());
+                pc?.close();
+                socket?.close();
+            } catch(e) {}
+            socket = pc = channel = remoteStream = null;
+            pendingIce.length = 0;
+            remoteDescriptionSet = false;
+            video.srcObject = null;
+            closing = false;
+            join.disabled = false;
+            room.disabled = false;
+            room.value = '';
+            
+            videoWrapper.classList.remove('active');
+            controls.classList.remove('active');
+            joinForm.style.display = 'flex';
+            set('Ready to connect');
+        }
+
+        join.onclick = joinRoom;
+        room.onkeydown = e => { if (e.key === 'Enter') joinRoom(); };
+        leave.onclick = closeSession;
+    </script>
+</body>
+</html>
