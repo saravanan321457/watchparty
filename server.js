@@ -1,14 +1,23 @@
 const WebSocket = require("ws");
+const http = require("http");
 
-const PORT = 8091;
+const PORT = process.env.PORT || 8091;
 
-const wss = new WebSocket.Server({
-    port: PORT,
+const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: "ok" }));
+    } else {
+        res.writeHead(404);
+        res.end();
+    }
 });
+
+const wss = new WebSocket.Server({ server });
 
 const rooms = new Map();
 
-console.log(`Signaling server running on ws://0.0.0.0:${PORT}`);
+console.log(`Signaling server configuring on 0.0.0.0:${PORT}`);
 
 wss.on("connection", (ws) => {
     console.log("Client connected");
@@ -89,4 +98,8 @@ wss.on("connection", (ws) => {
             }
         }
     });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
 });
