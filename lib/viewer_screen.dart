@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'constants.dart';
@@ -20,6 +21,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
   String _roomId = '';
   String _status = 'Ready to connect';
   bool _connected = false;
+  bool _isLoading = false;
+  bool _isFullscreen = false;
   bool _remoteDescriptionSet = false;
   
   RTCPeerConnection? _pc;
@@ -52,6 +55,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
   Future<void> _joinRoom() async {
     final code = _roomController.text.trim().toUpperCase();
     if (code.isEmpty) return;
+    _safeSet(() => _isLoading = true);
     try {
       _socket = WebSocketChannel.connect(Uri.parse(signalingUrl));
       _socketSubscription = _socket!.stream.listen(_handleSignal, onError: (e) {
@@ -63,6 +67,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
       _safeSet(() => _status = 'Connecting...');
     } catch (e) {
       _safeSet(() => _status = 'Could not connect: $e');
+    } finally {
+      _safeSet(() => _isLoading = false);
     }
   }
 
@@ -214,6 +220,47 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isFullscreen) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            Center(
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _connected ? RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain) : const Center(child: CircularProgressIndicator()),
+              ),
+            ),
+            Positioned(
+              top: 40,
+              right: 20,
+              child: IconButton(
+                icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
+                onPressed: () {
+                  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+                  _safeSet(() => _isFullscreen = false);
+                },
+              ),
+            ),
+            if (_connected)
+              Positioned(
+                bottom: 40,
+                left: 0,
+                right: 0,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(_isPlaying ? Icons.play_arrow : Icons.pause, color: Colors.white, size: 32),
+                    const SizedBox(width: 12),
+                    Text('Host time: \${_formatTime(_positionMs)}', style: const TextStyle(fontSize: 18, color: Colors.white)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('VIEW ROOM', style: TextStyle(letterSpacing: 2, fontSize: 16, fontWeight: FontWeight.bold)),
@@ -228,10 +275,19 @@ class _ViewerScreenState extends State<ViewerScreen> {
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              TextField(
+          child: _isLoading
+              ? const Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 24),
+                    Text('Loading media...', style: TextStyle(fontWeight: FontWeight.w500)),
+                  ],
+                )
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    TextField(
                 controller: _roomController,
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 24, letterSpacing: 4, fontWeight: FontWeight.bold),
@@ -305,7 +361,22 @@ class _ViewerScreenState extends State<ViewerScreen> {
               child: Center(
                 child: AspectRatio(
                   aspectRatio: 16 / 9,
-                  child: _connected ? RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain) : const Center(child: CircularProgressIndicator()),
+                  child: Stack(
+                    children: [
+                      _connected ? RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain) : const Center(child: CircularProgressIndicator()),
+                      Positioned(
+                        bottom: 8,
+                        right: 8,
+                        child: IconButton(
+                          icon: const Icon(Icons.fullscreen, color: Colors.white, size: 28),
+                          onPressed: () {
+                            SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+                            _safeSet(() => _isFullscreen = true);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

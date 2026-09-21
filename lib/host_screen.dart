@@ -32,6 +32,8 @@ class _HostScreenState extends State<HostScreen> {
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   
   bool _isPlaying = false;
+  bool _isLoading = false;
+  bool _isFullscreen = false;
   int _positionMs = 0;
   int _durationMs = 0;
   Timer? _progressTimer;
@@ -56,7 +58,9 @@ class _HostScreenState extends State<HostScreen> {
   }
 
   Future<void> _selectVideo() async {
-    final result = await FilePicker.platform.pickFiles(
+    _safeSet(() => _isLoading = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
       type: FileType.video,
       withData: false,         // never load into memory — use path/uri instead
       withReadStream: false,
@@ -81,6 +85,13 @@ class _HostScreenState extends State<HostScreen> {
           const SnackBar(content: Text('Could not access this video file. Please try another.')),
         );
       }
+    }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error selecting file: \$e')));
+      }
+    } finally {
+      _safeSet(() => _isLoading = false);
     }
   }
 
@@ -286,6 +297,60 @@ class _HostScreenState extends State<HostScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isFullscreen) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            Center(
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _videoStream != null ? RTCVideoView(_localRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain) : const Center(child: CircularProgressIndicator()),
+              ),
+            ),
+            Positioned(
+              top: 40,
+              right: 20,
+              child: IconButton(
+                icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
+                onPressed: () {
+                  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+                  _safeSet(() => _isFullscreen = false);
+                },
+              ),
+            ),
+            if (_viewerConnected)
+              Positioned(
+                bottom: 40,
+                left: 0,
+                right: 0,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                      iconSize: 48,
+                      icon: const Icon(Icons.replay_10, color: Colors.white),
+                      onPressed: () => _seekTo(_positionMs - 10000),
+                    ),
+                    const SizedBox(width: 32),
+                    FloatingActionButton(
+                      onPressed: _togglePlay,
+                      child: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, size: 48),
+                    ),
+                    const SizedBox(width: 32),
+                    IconButton(
+                      iconSize: 48,
+                      icon: const Icon(Icons.forward_10, color: Colors.white),
+                      onPressed: () => _seekTo(_positionMs + 10000),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('HOST ROOM', style: TextStyle(letterSpacing: 2, fontSize: 16, fontWeight: FontWeight.bold)),
@@ -300,10 +365,19 @@ class _HostScreenState extends State<HostScreen> {
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              FilledButton.icon(
+          child: _isLoading
+              ? const Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 24),
+                    Text('Loading media...', style: TextStyle(fontWeight: FontWeight.w500)),
+                  ],
+                )
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    FilledButton.icon(
                 onPressed: _selectVideo,
                 icon: const Icon(Icons.video_file),
                 label: const Text('SELECT VIDEO'),
@@ -383,7 +457,22 @@ class _HostScreenState extends State<HostScreen> {
               child: Center(
                 child: AspectRatio(
                   aspectRatio: 16 / 9,
-                  child: _videoStream != null ? RTCVideoView(_localRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain) : const Center(child: CircularProgressIndicator()),
+                  child: Stack(
+                    children: [
+                      _videoStream != null ? RTCVideoView(_localRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain) : const Center(child: CircularProgressIndicator()),
+                      Positioned(
+                        bottom: 8,
+                        right: 8,
+                        child: IconButton(
+                          icon: const Icon(Icons.fullscreen, color: Colors.white, size: 28),
+                          onPressed: () {
+                            SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+                            _safeSet(() => _isFullscreen = true);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
