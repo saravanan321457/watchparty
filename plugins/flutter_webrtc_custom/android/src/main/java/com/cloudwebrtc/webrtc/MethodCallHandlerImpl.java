@@ -345,7 +345,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
       Mp4AudioExtractor ext = Mp4AudioExtractor.instance;
       if (ext.isActive()) {
         buffer.rewind();
-        ext.readSamples(buffer);
+        ext.readSamples(buffer, sampleRate, channelCount);
       } else {
         // Silence when no MP4 is loaded
         buffer.rewind();
