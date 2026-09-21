@@ -134,7 +134,7 @@ class _HostScreenState extends State<HostScreen> {
           break;
         case 'viewer_joined':
           _safeSet(() => _status = 'Viewer joining...');
-          await _resetPeer();
+          await _resetPeer(keepMedia: true);
           await _createOffer();
           break;
         case 'viewer_left':
@@ -142,7 +142,7 @@ class _HostScreenState extends State<HostScreen> {
             _status = 'Waiting for viewer...';
             _viewerConnected = false;
           });
-          await _resetPeer();
+          await _resetPeer(keepMedia: true);
           break;
         case 'answer':
           await _handleAnswer(data);
@@ -181,13 +181,15 @@ class _HostScreenState extends State<HostScreen> {
         }
       };
 
-      _videoStream = await navigator.mediaDevices.getUserMedia({
-        'video': {
-          'optional': [{'sourceId': 'MP4_VIDEO:$_videoPath'}]
-        },
-        'audio': true,
-      });
-      _localRenderer.srcObject = _videoStream;
+      if (_videoStream == null) {
+        _videoStream = await navigator.mediaDevices.getUserMedia({
+          'video': {
+            'optional': [{'sourceId': 'MP4_VIDEO:$_videoPath'}]
+          },
+          'audio': true,
+        });
+        _localRenderer.srcObject = _videoStream;
+      }
       for (final track in _videoStream!.getTracks()) {
         await _pc!.addTrack(track, _videoStream!);
       }
@@ -212,16 +214,18 @@ class _HostScreenState extends State<HostScreen> {
     }
   }
 
-  Future<void> _resetPeer() async {
+  Future<void> _resetPeer({bool keepMedia = false}) async {
     _progressTimer?.cancel();
     _progressTimer = null;
     await _channel?.close();
     await _pc?.close();
-    _localRenderer.srcObject = null;
-    await _videoStream?.dispose();
     _channel = null;
     _pc = null;
-    _videoStream = null;
+    if (!keepMedia) {
+      _localRenderer.srcObject = null;
+      await _videoStream?.dispose();
+      _videoStream = null;
+    }
     _safeSet(() {
       _isPlaying = false;
       _positionMs = 0;
