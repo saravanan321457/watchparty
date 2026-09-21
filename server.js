@@ -57,8 +57,9 @@ wss.on("connection", (ws) => {
                 return;
             }
             if (room.viewer) {
-                ws.send(JSON.stringify({ type: "error", message: "Room already has a viewer" }));
-                return;
+                console.log(`Replacing old viewer in room: ${roomId}`);
+                room.viewer.send(JSON.stringify({ type: "error", message: "Replaced by new viewer" }));
+                room.viewer.close();
             }
             room.viewer = ws;
             currentRoom = roomId;
