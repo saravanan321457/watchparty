@@ -33,6 +33,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
   
   bool _isPlaying = false;
   int _positionMs = 0;
+  final List<String> _chatMessages = [];
+  final TextEditingController _chatController = TextEditingController();
   
   @override
   void initState() {
@@ -46,6 +48,18 @@ class _ViewerScreenState extends State<ViewerScreen> {
     _leaveRoom();
     _remoteRenderer.dispose();
     super.dispose();
+  }
+
+  
+  void _sendChatMessage() {
+    final msg = _chatController.text.trim();
+    if (msg.isNotEmpty) {
+      _channel?.send(RTCDataChannelMessage(jsonEncode({'type': 'chat', 'message': msg})));
+      _safeSet(() {
+        _chatMessages.add('You: $msg');
+      });
+      _chatController.clear();
+    }
   }
 
   void _safeSet(VoidCallback fn) {
@@ -393,6 +407,49 @@ class _ViewerScreenState extends State<ViewerScreen> {
                 ],
               ),
             ),
+
+          if (_connected)
+            Expanded(
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ListView.builder(
+                      padding: const EdgeInsets.all(8),
+                      itemCount: _chatMessages.length,
+                      itemBuilder: (context, index) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2.0),
+                          child: Text(_chatMessages[index]),
+                        );
+                      },
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _chatController,
+                            decoration: const InputDecoration(
+                              hintText: 'Type a message...',
+                              isDense: true,
+                              border: OutlineInputBorder(),
+                            ),
+                            onSubmitted: (_) => _sendChatMessage(),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.send),
+                          onPressed: _sendChatMessage,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: SizedBox(
