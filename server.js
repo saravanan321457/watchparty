@@ -92,9 +92,11 @@ wss.on("connection", (ws) => {
                 rooms.delete(currentRoom);
             } else if (role === "viewer") {
                 console.log(`Viewer left room: ${currentRoom}`);
-                room.viewer = null;
-                if (room.host) {
-                    room.host.send(JSON.stringify({ type: "viewer_left" }));
+                if (room.viewer === ws) {
+                    room.viewer = null;
+                    if (room.host) {
+                        room.host.send(JSON.stringify({ type: "viewer_left" }));
+                    }
                 }
             }
         }

@@ -134,6 +134,7 @@ class _HostScreenState extends State<HostScreen> {
           break;
         case 'viewer_joined':
           _safeSet(() => _status = 'Viewer joining...');
+          await _resetPeer();
           await _createOffer();
           break;
         case 'viewer_left':
