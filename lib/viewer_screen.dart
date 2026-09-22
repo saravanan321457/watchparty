@@ -181,6 +181,8 @@ class _ViewerScreenState extends State<ViewerScreen> with TickerProviderStateMix
           _connected = true;
           _status = 'Connected · Synced with host';
         });
+        // Force audio to loudspeaker instead of earpiece (phone call mode)
+        Helper.setSpeakerphoneOn(true);
       } else if (s == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
         _safeSet(() => _status = 'Connection failed. Ask host to restart.');
       } else if (s == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
