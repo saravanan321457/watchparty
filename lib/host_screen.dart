@@ -256,7 +256,16 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
       if (_videoStream == null) {
         _videoStream = await navigator.mediaDevices.getUserMedia({
           'video': {'optional': [{'sourceId': 'MP4_VIDEO:$_videoPath'}]},
-          'audio': true,
+          'audio': {
+            'echoCancellation': false,
+            'noiseSuppression': false,
+            'autoGainControl': false,
+            'googEchoCancellation': false,
+            'googAutoGainControl': false,
+            'googNoiseSuppression': false,
+            'googHighpassFilter': false,
+            'googTypingNoiseDetection': false,
+          },
         });
         _localRenderer.srcObject = _videoStream;
       }
