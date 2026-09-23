@@ -15,6 +15,9 @@ import org.webrtc.VideoCapturer;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.IOException;
+import android.media.AudioManager;
+import android.media.AudioAttributes;
+import android.os.Build;
 
 /**
  * A WebRTC VideoCapturer that decodes a local MP4 file using Android MediaPlayer and
@@ -42,6 +45,8 @@ public class Mp4Capturer implements VideoCapturer {
     private Context appContext;
     private MediaPlayer mediaPlayer;
     private boolean listening = false;
+    private AudioManager audioManager;
+    private AudioManager.OnAudioFocusChangeListener focusChangeListener;
 
     /** The raw string passed from Flutter (file path or content:// URI). */
     private final String rawPath;
@@ -61,6 +66,39 @@ public class Mp4Capturer implements VideoCapturer {
     public void startCapture(int width, int height, int fps) {
         Log.d(TAG, "startCapture: " + rawPath);
         try {
+            audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
+            focusChangeListener = focusChange -> {
+                if (mediaPlayer == null) return;
+                switch (focusChange) {
+                    case AudioManager.AUDIOFOCUS_LOSS:
+                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                        // Mute local playback during phone call/interruption
+                        // But do NOT pause mediaPlayer! Viewer keeps hearing WebRTC audio.
+                        mediaPlayer.setVolume(0f, 0f);
+                        Log.d(TAG, "AudioFocus lost - muting local playback");
+                        break;
+                    case AudioManager.AUDIOFOCUS_GAIN:
+                        // Restore local playback volume when call ends
+                        mediaPlayer.setVolume(1f, 1f);
+                        Log.d(TAG, "AudioFocus gained - restoring local playback");
+                        break;
+                }
+            };
+            
+            // Request audio focus
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioManager.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                                .build())
+                        .setOnAudioFocusChangeListener(focusChangeListener)
+                        .build());
+            } else {
+                audioManager.requestAudioFocus(focusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            }
+
             mediaPlayer = new MediaPlayer();
             currentMediaPlayer = mediaPlayer;
 
@@ -168,6 +206,9 @@ public class Mp4Capturer implements VideoCapturer {
     @Override
     public void stopCapture() throws InterruptedException {
         Log.d(TAG, "stopCapture");
+        if (audioManager != null && focusChangeListener != null) {
+            audioManager.abandonAudioFocus(focusChangeListener);
+        }
         Mp4AudioExtractor.instance.stop();
         if (mediaPlayer != null) {
             try { mediaPlayer.stop(); } catch (Exception ignored) {}
