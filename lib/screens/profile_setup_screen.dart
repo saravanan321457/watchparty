@@ -1,14 +1,11 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/user_model.dart';
 import '../services/firestore_service.dart';
-import '../services/storage_service.dart';
 import 'home_screen.dart';
 
 class ProfileSetupScreen extends StatefulWidget {
@@ -21,8 +18,6 @@ class ProfileSetupScreen extends StatefulWidget {
 
 class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   final FirestoreService _firestoreService = FirestoreService();
-  final StorageService _storageService = StorageService();
-  final ImagePicker _picker = ImagePicker();
 
   final _step1FormKey = GlobalKey<FormState>();
   final _step2FormKey = GlobalKey<FormState>();
@@ -32,7 +27,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   final TextEditingController _bioController = TextEditingController();
 
   int _currentStep = 1;
-  File? _imageFile;
 
   bool _isCheckingUsername = false;
   bool? _isUsernameAvailable;
@@ -61,23 +55,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     super.dispose();
   }
 
-  Future<void> _pickImage() async {
-    try {
-      final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 800,
-        maxHeight: 800,
-        imageQuality: 85,
-      );
-      if (picked != null) {
-        setState(() {
-          _imageFile = File(picked.path);
-        });
-      }
-    } catch (e) {
-      _showSnackBar('Failed to select image: $e', isError: true);
-    }
-  }
 
   void _onUsernameChanged(String value) {
     _debounceTimer?.cancel();
@@ -173,19 +150,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     });
 
     try {
-      String? photoUrl;
-      if (_imageFile != null) {
-        setState(() {
-          _submissionStatus = 'Uploading profile photo...';
-        });
-        try {
-          photoUrl = await _storageService.uploadProfileImage(user.uid, _imageFile!);
-        } catch (e) {
-          debugPrint('Storage upload note: $e');
-          // Proceed even if photo upload fails
-        }
-      }
-
       setState(() {
         _submissionStatus = 'Finalizing setup...';
       });
@@ -193,12 +157,15 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       final displayName = _displayNameController.text.trim();
       final bio = _bioController.text.trim();
 
+      // Use Google/provider photoURL if available (no Firebase Storage needed)
+      final photoUrl = user.photoURL;
+
       final userModel = UserModel(
         uid: user.uid,
         displayName: displayName,
         username: username,
         email: user.email,
-        photoUrl: photoUrl ?? user.photoURL,
+        photoUrl: photoUrl,
         bio: bio.isNotEmpty ? bio : null,
         isGuest: user.isAnonymous,
         roomsHosted: 0,
@@ -209,9 +176,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
 
       try {
         await user.updateDisplayName(displayName);
-        if (photoUrl != null) {
-          await user.updatePhotoURL(photoUrl);
-        }
       } catch (_) {}
 
       if (!mounted) return;
@@ -387,101 +351,66 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         children: [
           const SizedBox(height: 12),
 
-          // Circular avatar with camera icon overlay, taps to pick from gallery
+          // Initials-based avatar preview (updates as user types name)
           Center(
-            child: GestureDetector(
-              onTap: _pickImage,
-              child: Stack(
-                alignment: Alignment.bottomRight,
-                children: [
-                  Container(
-                    width: 110,
-                    height: 110,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFF1A1A2E),
-                      border: Border.all(
-                        color: const Color(0xFF6C63FF).withOpacity(0.6),
-                        width: 2.5,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF6C63FF).withOpacity(0.25),
-                          blurRadius: 18,
-                          spreadRadius: 2,
-                        ),
-                      ],
+            child: AnimatedBuilder(
+              animation: _displayNameController,
+              builder: (context, _) {
+                final name = _displayNameController.text.trim();
+                final initials = name.isNotEmpty
+                    ? name.split(' ').where((w) => w.isNotEmpty).take(2)
+                        .map((w) => w[0].toUpperCase()).join()
+                    : '?';
+                final avatarColors = [
+                  [const Color(0xFF6C63FF), const Color(0xFF8B84FF)],
+                  [const Color(0xFF00B4D8), const Color(0xFF0077B6)],
+                  [const Color(0xFFFF6B6B), const Color(0xFFEE5A24)],
+                  [const Color(0xFF1DD1A1), const Color(0xFF10AC84)],
+                  [const Color(0xFFFECA57), const Color(0xFFFF9F43)],
+                ];
+                final colorPair = avatarColors[
+                    name.isNotEmpty ? name.codeUnitAt(0) % avatarColors.length : 0];
+                return Container(
+                  width: 110,
+                  height: 110,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: colorPair,
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                    child: ClipOval(
-                      child: _imageFile != null
-                          ? Image.file(
-                              _imageFile!,
-                              width: 110,
-                              height: 110,
-                              fit: BoxFit.cover,
-                            )
-                          : const Icon(
-                              Icons.person_rounded,
-                              size: 64,
-                              color: Color(0xFF8E8EA8),
-                            ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: colorPair[0].withOpacity(0.4),
+                        blurRadius: 20,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: Center(
+                    child: Text(
+                      initials,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 38,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1,
+                      ),
                     ),
                   ),
-                  Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF6C63FF),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: const Color(0xFF0A0A0F),
-                        width: 3,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.4),
-                          blurRadius: 6,
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.camera_alt_rounded,
-                      size: 18,
-                      color: Colors.white,
-                    ),
-                  ),
-                ],
-              ),
+                );
+              },
             ),
           )
               .animate()
               .scale(duration: 400.ms, curve: Curves.easeOutBack),
 
-          const SizedBox(height: 14),
-
-          // Skip / Change photo option
-          if (_imageFile != null)
-            TextButton(
-              onPressed: () => setState(() => _imageFile = null),
-              child: const Text(
-                'Remove photo',
-                style: TextStyle(
-                  color: Colors.white60,
-                  fontSize: 13,
-                ),
-              ),
-            )
-          else
-            TextButton(
-              onPressed: _goToStep2,
-              child: const Text(
-                'Skip profile photo',
-                style: TextStyle(
-                  color: Color(0xFF8E8EA8),
-                  fontSize: 13,
-                ),
-              ),
-            ),
+          const SizedBox(height: 8),
+          const Text(
+            'Your avatar is auto-generated ✨',
+            style: TextStyle(color: Color(0xFF8E8EA8), fontSize: 12),
+          ),
 
           const SizedBox(height: 24),
 

@@ -16,7 +16,7 @@ class HostScreen extends StatefulWidget {
   State<HostScreen> createState() => _HostScreenState();
 }
 
-class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
+class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _channelNative = MethodChannel('mp4_webrtc');
 
   bool _disposed = false;
@@ -56,6 +56,7 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _localRenderer.initialize();
     _pulseCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
@@ -65,6 +66,7 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
     _progressTimer?.cancel();
     _controlsTimer?.cancel();
@@ -74,6 +76,22 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
     _leaveRoom();
     _localRenderer.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Host went background or killed - close the room
+      if (_roomId.isNotEmpty) {
+        FirestoreService.instance.closeRoom(_roomId).catchError((_) {});
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      // Reactivate room when host comes back
+      if (_roomId.isNotEmpty) {
+        FirestoreService.instance.reopenRoom(_roomId).catchError((_) {});
+      }
+    }
   }
 
   void _safeSet(VoidCallback fn) {

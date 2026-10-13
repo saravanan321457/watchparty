@@ -15,15 +15,17 @@ class FirestoreService {
   CollectionReference<Map<String, dynamic>> get _usersRef =>
       _firestore.collection('users');
 
-  /// Stream of active public rooms for Discover tab
-  Stream<List<RoomModel>> getPublicRoomsStream() {
+  /// Stream of ALL active rooms (public + private) for Discover tab
+  Stream<List<RoomModel>> getAllRoomsStream() {
     return _roomsRef
-        .where('isPublic', isEqualTo: true)
-        .where('isActive', isEqualTo: true)
-        .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) {
-      return snapshot.docs.map((doc) => RoomModel.fromFirestore(doc)).toList();
+      final list = snapshot.docs
+          .map((doc) => RoomModel.fromFirestore(doc))
+          .where((r) => r.isActive)
+          .toList();
+      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return list;
     });
   }
 
@@ -33,11 +35,14 @@ class FirestoreService {
       return Stream.value(<RoomModel>[]);
     }
     return _roomsRef
-        .where('hostId', isEqualTo: uid)
-        .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) {
-      return snapshot.docs.map((doc) => RoomModel.fromFirestore(doc)).toList();
+      final list = snapshot.docs
+          .map((doc) => RoomModel.fromFirestore(doc))
+          .where((r) => r.hostId == uid)
+          .toList();
+      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return list;
     });
   }
 
@@ -126,6 +131,14 @@ class FirestoreService {
       await _roomsRef.doc(roomId).update({
         'isActive': false,
       });
+    } catch (_) {}
+  }
+
+  /// Reopen or reactivate a room
+  Future<void> reopenRoom(String roomId) async {
+    if (roomId.isEmpty) return;
+    try {
+      await _roomsRef.doc(roomId).update({'isActive': true});
     } catch (_) {}
   }
 

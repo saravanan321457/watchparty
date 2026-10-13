@@ -3,10 +3,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/room_model.dart';
 import '../services/firestore_service.dart';
-import '../services/auth_service.dart';
 
 import 'host_screen.dart';
 import 'viewer_screen.dart';
@@ -399,6 +399,132 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  void _showJoinByCodeDialog() {
+    final codeController = TextEditingController();
+    String? errorMsg;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(builder: (context, setDialogState) {
+          return AlertDialog(
+            backgroundColor: _surfaceColor,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Row(
+              children: [
+                Icon(Icons.meeting_room_rounded, color: Color(0xFF6C63FF), size: 26),
+                SizedBox(width: 10),
+                Text('Join a Room', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Enter the 6-character room code shared by the host.',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.65), fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: codeController,
+                  autofocus: true,
+                  textCapitalization: TextCapitalization.characters,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 4,
+                  ),
+                  maxLength: 6,
+                  decoration: InputDecoration(
+                    hintText: 'XXXXXX',
+                    hintStyle: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.3),
+                      fontSize: 22,
+                      letterSpacing: 4,
+                    ),
+                    errorText: errorMsg,
+                    counterText: '',
+                    prefixIcon: const Icon(Icons.vpn_key_rounded, color: Color(0xFF6C63FF)),
+                    filled: true,
+                    fillColor: const Color(0xFF0A0A0F),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFF2A2A4A)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFF6C63FF), width: 2),
+                    ),
+                    errorBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.redAccent, width: 2),
+                    ),
+                  ),
+                  onChanged: (v) {
+                    if (errorMsg != null) {
+                      setDialogState(() => errorMsg = null);
+                    }
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('Cancel', style: TextStyle(color: Colors.white.withValues(alpha: 0.6))),
+              ),
+              FilledButton.icon(
+                onPressed: () async {
+                  final code = codeController.text.trim().toUpperCase();
+                  if (code.length < 4) {
+                    setDialogState(() => errorMsg = 'Enter a valid room code');
+                    return;
+                  }
+                  try {
+                    final snap = await FirebaseFirestore.instance
+                        .collection('rooms')
+                        .doc(code)
+                        .get();
+                    if (!snap.exists) {
+                      final query = await FirebaseFirestore.instance
+                          .collection('rooms')
+                          .where('roomCode', isEqualTo: code)
+                          .limit(1)
+                          .get();
+                      if (query.docs.isEmpty) {
+                        setDialogState(() => errorMsg = 'Room not found. Check the code.');
+                        return;
+                      }
+                      if (!ctx.mounted) return;
+                      Navigator.pop(ctx);
+                      final room = RoomModel.fromFirestore(query.docs.first);
+                      _joinRoom(room);
+                    } else {
+                      if (!ctx.mounted) return;
+                      Navigator.pop(ctx);
+                      final room = RoomModel.fromFirestore(snap);
+                      _joinRoom(room);
+                    }
+                  } catch (e) {
+                    setDialogState(() => errorMsg = 'Error: ${e.toString().split("]").last.trim()}');
+                  }
+                },
+                icon: const Icon(Icons.login_rounded, size: 18),
+                label: const Text('Join Room'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          );
+        });
+      },
+    );
+  }
+
   void _onBottomNavTapped(int index) {
     setState(() {
       _currentNavIndex = index;
@@ -487,6 +613,30 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
               ),
         actions: [
+          // Join by Code button
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: IconButton(
+              onPressed: _showJoinByCodeDialog,
+              icon: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: _accentPurple.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: _accentPurple.withOpacity(0.4)),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.meeting_room_rounded, color: Color(0xFF6C63FF), size: 16),
+                    SizedBox(width: 4),
+                    Text('Join', style: TextStyle(color: Color(0xFF6C63FF), fontSize: 13, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+              tooltip: 'Join by Room Code',
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: GestureDetector(
@@ -669,7 +819,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _buildDiscoverTab() {
     return StreamBuilder<List<RoomModel>>(
-      stream: FirestoreService.instance.getPublicRoomsStream(),
+      stream: FirestoreService.instance.getAllRoomsStream(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return _buildShimmerLoading();
@@ -677,28 +827,50 @@ class _HomeScreenState extends State<HomeScreen>
 
         if (snapshot.hasError) {
           return Center(
-            child: Padding(
+            child: SingleChildScrollView(
               padding: const EdgeInsets.all(24.0),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.wifi_off_rounded,
-                      size: 60, color: Colors.white38),
+                  Icon(
+                    snapshot.error.toString().contains('permission-denied')
+                        ? Icons.lock_person_rounded
+                        : Icons.wifi_off_rounded,
+                    size: 60,
+                    color: snapshot.error.toString().contains('permission-denied')
+                        ? const Color(0xFFFF9800)
+                        : Colors.white38,
+                  ),
                   const SizedBox(height: 16),
                   Text(
-                    'Error loading live rooms',
+                    snapshot.error.toString().contains('permission-denied')
+                        ? 'Firestore Rules Not Allowed'
+                        : 'Error loading live rooms',
                     style: TextStyle(
                       fontSize: 16,
-                      color: Colors.white.withOpacity(0.8),
+                      color: Colors.white.withOpacity(0.9),
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    '${snapshot.error}',
+                    snapshot.error.toString().contains('permission-denied')
+                        ? 'Set rules in Firebase Console:\nallow read, write: if true;'
+                        : '${snapshot.error}',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                        fontSize: 12, color: Colors.white.withOpacity(0.4)),
+                        fontSize: 12, color: Colors.white.withOpacity(0.55), height: 1.4),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: () {
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Retry'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF6C63FF),
+                    ),
                   ),
                 ],
               ),
@@ -846,10 +1018,44 @@ class _HomeScreenState extends State<HomeScreen>
         }
 
         if (snapshot.hasError) {
+          final isPermissionDenied =
+              snapshot.error.toString().contains('permission-denied');
           return Center(
-            child: Text(
-              'Error loading your rooms: ${snapshot.error}',
-              style: const TextStyle(color: Colors.white70),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    isPermissionDenied
+                        ? Icons.lock_person_rounded
+                        : Icons.error_outline_rounded,
+                    size: 48,
+                    color: isPermissionDenied
+                        ? const Color(0xFFFF9800)
+                        : Colors.white38,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    isPermissionDenied
+                        ? 'Update Firestore Rules in Firebase Console to view your rooms.'
+                        : 'Error loading your rooms: ${snapshot.error}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: () {
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Retry'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF6C63FF),
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         }
