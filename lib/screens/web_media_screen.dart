@@ -48,6 +48,8 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   // Controllers
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _passcodeController = TextEditingController();
+  final TextEditingController _browserAddressController = TextEditingController();
   final TextEditingController _chatController = TextEditingController();
   final ScrollController _chatScroll = ScrollController();
 
@@ -58,8 +60,11 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   late bool _isHost;
   String _roomCode = '';
   String _videoUrl = '';
-  String _roomTitle = 'Web Stream Party';
-  bool _isPublic = true;
+  String _roomTitle = 'Private Web Stream';
+  bool _isPublic = false; // Default private
+  bool _isAdultContent = false; // 18+ adult content flag
+  int _maxViewers = 8; // Strictly capped at 8 people
+  String _passcode = '';
   bool _isRoomCreated = false;
   bool _isLoading = false;
   bool _isWebLoading = true;
@@ -70,7 +75,12 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   int _viewerCount = 1;
   bool _controlsVisible = true;
   Timer? _controlsTimer;
-  bool _showDrmBanner = true;
+
+  // Video Sniffer State
+  bool _hasDetectedVideo = false;
+  double _detectedVideoTime = 0.0;
+  bool _detectedVideoPlaying = false;
+  Timer? _videoDetectorTimer;
 
   // Signaling & WebSocket
   WebSocketChannel? _socket;
@@ -84,14 +94,43 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
 
-  // Popular web media presets
-  final List<Map<String, String>> _popularPresets = [
-    {'name': 'YouTube', 'url': 'https://m.youtube.com'},
-    {'name': 'Netflix', 'url': 'https://www.netflix.com'},
-    {'name': 'Prime Video', 'url': 'https://www.primevideo.com'},
-    {'name': 'Disney+', 'url': 'https://www.disneyplus.com'},
-    {'name': 'Twitch', 'url': 'https://m.twitch.tv'},
-    {'name': 'Vimeo', 'url': 'https://vimeo.com/watch'},
+  // Cloud & Web Presets
+  final List<Map<String, dynamic>> _cloudPresets = [
+    {
+      'name': 'Google Drive',
+      'icon': Icons.add_to_drive_rounded,
+      'color': Color(0xFF34A853),
+      'url': 'https://drive.google.com',
+      'hint': 'Paste Google Drive video link (converted to preview player automatically)',
+    },
+    {
+      'name': 'Dropbox',
+      'icon': Icons.cloud_queue_rounded,
+      'color': Color(0xFF0061FF),
+      'url': 'https://www.dropbox.com',
+      'hint': 'Paste Dropbox video link (converted to direct stream automatically)',
+    },
+    {
+      'name': 'Direct MP4/M3U8',
+      'icon': Icons.video_file_rounded,
+      'color': Color(0xFF6C63FF),
+      'url': 'https://',
+      'hint': 'Paste any raw .mp4 or .m3u8 cloud streaming link',
+    },
+    {
+      'name': '18+ Adult Video',
+      'icon': Icons.explicit_rounded,
+      'color': Color(0xFFFF1744),
+      'url': 'https://',
+      'hint': 'Watch private 18+ adult web video (Strictly private with PIN, max 8 viewers)',
+    },
+    {
+      'name': 'Web Search',
+      'icon': Icons.search_rounded,
+      'color': Color(0xFF00B4D8),
+      'url': 'https://www.google.com',
+      'hint': 'Browse any website and play videos directly',
+    },
   ];
 
   @override
@@ -103,6 +142,10 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     _pulseAnim = Tween<double>(begin: 0.5, end: 1.0).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
+
+    // Auto-generate 4-digit PIN for private rooms
+    _passcode = (1000 + (DateTime.now().millisecond * 9) % 9000).toString();
+    _passcodeController.text = _passcode;
 
     if (widget.videoUrl != null && widget.videoUrl!.isNotEmpty) {
       _videoUrl = _formatUrl(widget.videoUrl!);
@@ -119,9 +162,12 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   void dispose() {
     _disposed = true;
     _controlsTimer?.cancel();
+    _videoDetectorTimer?.cancel();
     _pulseCtrl.dispose();
     _urlController.dispose();
     _titleController.dispose();
+    _passcodeController.dispose();
+    _browserAddressController.dispose();
     _chatController.dispose();
     _chatScroll.dispose();
 
@@ -152,8 +198,35 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     return List.generate(6, (i) => chars[(rnd + i * 7919) % chars.length]).join();
   }
 
+  /// Converts Google Drive or Dropbox links to streamable embed/direct preview format
   String _formatUrl(String raw) {
     var trimmed = raw.trim();
+
+    // 1. Google Drive preview conversion:
+    // e.g. https://drive.google.com/file/d/1a2b3c4d5e/view?usp=sharing
+    // -> https://drive.google.com/file/d/1a2b3c4d5e/preview
+    final driveMatch = RegExp(r'drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)').firstMatch(trimmed);
+    if (driveMatch != null) {
+      final fileId = driveMatch.group(1);
+      return 'https://drive.google.com/file/d/$fileId/preview';
+    }
+
+    final driveOpenMatch = RegExp(r'drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)').firstMatch(trimmed);
+    if (driveOpenMatch != null) {
+      final fileId = driveOpenMatch.group(1);
+      return 'https://drive.google.com/file/d/$fileId/preview';
+    }
+
+    // 2. Dropbox raw stream conversion:
+    if (trimmed.contains('dropbox.com')) {
+      if (trimmed.contains('?dl=0')) {
+        trimmed = trimmed.replaceAll('?dl=0', '?raw=1');
+      } else if (!trimmed.contains('?raw=1')) {
+        trimmed = '$trimmed?raw=1';
+      }
+    }
+
+    // 3. Fallback prefix
     if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
       trimmed = 'https://$trimmed';
     }
@@ -176,27 +249,56 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   Future<void> _initViewerMode() async {
     _safeSet(() {
       _isLoading = true;
-      _statusMessage = 'Connecting to room $_roomCode...';
+      _statusMessage = 'Connecting to private stream $_roomCode...';
     });
 
     try {
-      // 1. Fetch Room from Firestore if videoUrl is missing
-      if (_videoUrl.isEmpty) {
-        final doc = await FirebaseFirestore.instance.collection('rooms').doc(_roomCode).get();
-        if (doc.exists && doc.data() != null) {
-          final room = RoomModel.fromFirestore(doc);
-          _videoUrl = _formatUrl(room.videoUrl ?? 'https://youtube.com');
-          _roomTitle = room.title;
+      // 1. Fetch Room from Firestore
+      final doc = await FirebaseFirestore.instance.collection('rooms').doc(_roomCode).get();
+      if (!doc.exists || doc.data() == null) {
+        _safeSet(() {
+          _isLoading = false;
+          _statusMessage = 'Room not found';
+        });
+        _showSnack('Room not found. Check code.');
+        return;
+      }
+
+      final room = RoomModel.fromFirestore(doc);
+
+      // 2. Enforce 8 people capacity limit
+      if (room.viewerCount >= room.maxViewers) {
+        _safeSet(() {
+          _isLoading = false;
+          _statusMessage = 'Room is full (${room.maxViewers}/${room.maxViewers} participants)';
+        });
+        _showSnack('Room has reached its maximum capacity of ${room.maxViewers} people.');
+        return;
+      }
+
+      // 3. Age verification if 18+ content
+      if (room.isAdultContent) {
+        final confirmed = await _showAgeGateDialog();
+        if (!confirmed) {
+          _safeSet(() => _isLoading = false);
+          if (mounted) Navigator.pop(context);
+          return;
         }
       }
 
-      // 2. Increment viewer count
+      _videoUrl = _formatUrl(room.videoUrl ?? 'https://google.com');
+      _roomTitle = room.title;
+      _isAdultContent = room.isAdultContent;
+      _maxViewers = room.maxViewers;
+      _browserAddressController.text = _videoUrl;
+
+      // 4. Increment viewer count
       await _firestoreService.incrementViewerCount(_roomCode);
 
-      // 3. Connect to signaling server
+      // 5. Connect to signaling server
       _connectWebSocket(isHost: false);
 
-      // 4. Initialize WebView with videoUrl
+      // 6. Initialize WebView with videoUrl
       if (_videoUrl.isNotEmpty) {
         _initWebView(_videoUrl);
       }
@@ -204,24 +306,63 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
       _safeSet(() {
         _isRoomCreated = true;
         _isLoading = false;
-        _statusMessage = 'Connected to room';
+        _statusMessage = 'Connected to stream';
         _syncBadgeText = 'Synced';
         _isSynced = true;
       });
     } catch (e) {
       _safeSet(() {
         _isLoading = false;
-        _statusMessage = 'Failed to join room: $e';
+        _statusMessage = 'Failed to join: $e';
       });
       _showSnack('Error connecting to room. Please check the code.');
     }
+  }
+
+  Future<bool> _showAgeGateDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1A1A2E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Color(0xFFFF1744), size: 28),
+                  SizedBox(width: 10),
+                  Text(
+                    '18+ Adult Content',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ],
+              ),
+              content: const Text(
+                'This private watch room is tagged as 18+ Adult Content. You must be at least 18 years old to enter this room.',
+                style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Exit', style: TextStyle(color: Colors.white54)),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFFFF1744)),
+                  child: const Text('I am 18+ (Enter)'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
   }
 
   // ── Host Mode: Create Room ────────────────────────────────────────────────
   Future<void> _createHostRoom() async {
     final rawUrl = _urlController.text.trim();
     if (rawUrl.isEmpty) {
-      _showSnack('Please enter a video URL');
+      _showSnack('Please enter a website or video URL');
       return;
     }
 
@@ -230,9 +371,13 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     try {
       final formattedUrl = _formatUrl(rawUrl);
       _videoUrl = formattedUrl;
+      _browserAddressController.text = formattedUrl;
       _roomCode = _generateCode();
-      final title = _titleController.text.trim().isEmpty ? 'Web Watch Party' : _titleController.text.trim();
+      final title = _titleController.text.trim().isEmpty
+          ? (_isAdultContent ? '🔞 Private 18+ Stream' : 'Cloud / Web Watch Party')
+          : _titleController.text.trim();
       _roomTitle = title;
+      _passcode = _passcodeController.text.trim();
 
       final currentUser = _auth.currentUser;
       final room = RoomModel(
@@ -242,10 +387,13 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         hostName: currentUser?.displayName?.isNotEmpty == true ? currentUser!.displayName! : 'Host',
         hostAvatar: currentUser?.photoURL,
         title: title,
-        isPublic: _isPublic,
+        isPublic: _isPublic && !_isAdultContent, // 18+ is ALWAYS private
         videoType: 'WEB',
         videoUrl: formattedUrl,
         viewerCount: 1,
+        maxViewers: _maxViewers, // Strictly capped at 8 people
+        isAdultContent: _isAdultContent,
+        passcode: _passcode.isNotEmpty ? _passcode : null,
         createdAt: DateTime.now(),
       );
 
@@ -258,10 +406,13 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
       // Initialize WebView
       _initWebView(formattedUrl);
 
+      // Start periodic video sniffer
+      _startVideoSniffer();
+
       _safeSet(() {
         _isRoomCreated = true;
         _isLoading = false;
-        _statusMessage = 'Waiting for viewers...';
+        _statusMessage = 'Room ready! Max 8 viewers allowed.';
         _syncBadgeText = 'Host (Master)';
         _isSynced = true;
       });
@@ -282,13 +433,18 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
             _safeSet(() => _webLoadingProgress = progress);
           },
           onPageStarted: (String url) {
-            _safeSet(() => _isWebLoading = true);
+            _safeSet(() {
+              _isWebLoading = true;
+              _browserAddressController.text = url;
+            });
           },
           onPageFinished: (String url) {
             _safeSet(() {
               _isWebLoading = false;
               _videoUrl = url;
+              _browserAddressController.text = url;
             });
+            _detectVideoOnPage();
           },
           onWebResourceError: (WebResourceError error) {
             debugPrint('Web resource error: ${error.description}');
@@ -296,6 +452,59 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         ),
       )
       ..loadRequest(Uri.parse(url));
+  }
+
+  // ── Periodic Video Sniffer (Finds HTML5 <video> tags on web pages) ────────
+  void _startVideoSniffer() {
+    _videoDetectorTimer?.cancel();
+    _videoDetectorTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (_webViewController != null && !_disposed) {
+        _detectVideoOnPage();
+      }
+    });
+  }
+
+  Future<void> _detectVideoOnPage() async {
+    if (_webViewController == null) return;
+    try {
+      const jsCode = """
+        (function() {
+          var v = document.querySelector('video');
+          if (!v) {
+            var iframes = document.querySelectorAll('iframe');
+            for (var i = 0; i < iframes.length; i++) {
+              try {
+                var doc = iframes[i].contentDocument || iframes[i].contentWindow.document;
+                var iv = doc.querySelector('video');
+                if (iv) { v = iv; break; }
+              } catch(e) {}
+            }
+          }
+          if (v) {
+            return JSON.stringify({
+              found: true,
+              currentTime: v.currentTime || 0,
+              paused: v.paused,
+              duration: v.duration || 0
+            });
+          }
+          return JSON.stringify({ found: false });
+        })();
+      """;
+      final raw = await _webViewController!.runJavaScriptReturningResult(jsCode);
+      var cleaned = raw.toString();
+      if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+        cleaned = cleaned.substring(1, cleaned.length - 1).replaceAll(r'\"', '"');
+      }
+      final parsed = jsonDecode(cleaned) as Map<String, dynamic>;
+      if (parsed['found'] == true) {
+        _safeSet(() {
+          _hasDetectedVideo = true;
+          _detectedVideoTime = (parsed['currentTime'] as num?)?.toDouble() ?? 0.0;
+          _detectedVideoPlaying = !(parsed['paused'] as bool? ?? true);
+        });
+      }
+    } catch (_) {}
   }
 
   // ── WebSocket Signaling ───────────────────────────────────────────────────
@@ -353,14 +562,14 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         case 'room_created':
           _safeSet(() {
             _roomCode = data['roomId'] ?? _roomCode;
-            _statusMessage = 'Room ready! Share the code.';
+            _statusMessage = 'Private room active! Share PIN with friends.';
           });
           break;
 
         case 'room_joined':
           _safeSet(() {
             _roomCode = data['roomId'] ?? _roomCode;
-            _statusMessage = 'Joined room successfully';
+            _statusMessage = 'Joined private room';
             _syncBadgeText = 'Synced';
             _isSynced = true;
           });
@@ -369,16 +578,16 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         case 'viewer_joined':
           _safeSet(() {
             _viewerCount++;
-            _statusMessage = 'Viewer joined!';
+            _statusMessage = 'Viewer joined ($_viewerCount/$_maxViewers)';
           });
-          _showSnack('A viewer joined the session!');
+          _showSnack('A viewer joined the private stream ($_viewerCount/$_maxViewers)');
           if (_isHost) _hostManualSync();
           break;
 
         case 'viewer_left':
           _safeSet(() {
             if (_viewerCount > 1) _viewerCount--;
-            _statusMessage = 'Viewer left';
+            _statusMessage = 'Viewer left ($_viewerCount/$_maxViewers)';
           });
           break;
 
@@ -395,12 +604,16 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
           _handleViewerSync(data);
           break;
 
+        case 'url_changed':
+          _handleViewerUrlChanged(data);
+          break;
+
         case 'chat':
           _handleIncomingChat(data);
           break;
 
         case 'error':
-          _showSnack('Server error: ${data['message'] ?? 'Unknown'}');
+          _showSnack('Server message: ${data['message'] ?? 'Notice'}');
           break;
       }
     } catch (e) {
@@ -431,9 +644,8 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         'timestamp': timeSeconds,
         'position': timeSeconds,
       });
-      _showSnack('Play command sent to viewers');
+      _showSnack('▶ Play broadcast to all $_viewerCount viewers');
     } catch (e) {
-      debugPrint('Error triggering play: $e');
       _send({'type': 'play', 'timestamp': 0.0});
     }
   }
@@ -460,9 +672,8 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         'timestamp': timeSeconds,
         'position': timeSeconds,
       });
-      _showSnack('Pause command sent to viewers');
+      _showSnack('⏸ Pause broadcast to all $_viewerCount viewers');
     } catch (e) {
-      debugPrint('Error triggering pause: $e');
       _send({'type': 'pause', 'timestamp': 0.0});
     }
   }
@@ -498,16 +709,25 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         'url': _videoUrl,
       });
 
-      _showSnack('Synced playback with viewers (${time.toStringAsFixed(1)}s)');
+      _showSnack('⚡ Synced time (${time.toStringAsFixed(1)}s) across all $_viewerCount viewers');
     } catch (e) {
-      debugPrint('Manual sync error: $e');
       _send({
         'type': 'sync',
         'timestamp': 0.0,
         'isPlaying': true,
         'url': _videoUrl,
       });
-      _showSnack('Sent sync ping to viewers');
+    }
+  }
+
+  /// Broadcast current page navigation URL to all viewers
+  void _hostSyncCurrentUrl() {
+    if (_videoUrl.isNotEmpty) {
+      _send({
+        'type': 'url_changed',
+        'url': _videoUrl,
+      });
+      _showSnack('Navigated all viewers to current page');
     }
   }
 
@@ -524,16 +744,14 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     final js = """
       (function() {
         var videos = document.querySelectorAll('video');
-        var t = $timestamp;
         videos.forEach(function(v) {
-          if (t > 0 && Math.abs(v.currentTime - t) > 1.5) {
-            v.currentTime = t;
+          if (Math.abs(v.currentTime - $timestamp) > 2) {
+            v.currentTime = $timestamp;
           }
           v.play();
         });
       })();
     """;
-
     _webViewController!.runJavaScript(js);
 
     Future.delayed(const Duration(milliseconds: 400), () {
@@ -556,16 +774,14 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     final js = """
       (function() {
         var videos = document.querySelectorAll('video');
-        var t = $timestamp;
         videos.forEach(function(v) {
-          if (t > 0 && Math.abs(v.currentTime - t) > 1.5) {
-            v.currentTime = t;
+          if (Math.abs(v.currentTime - $timestamp) > 2) {
+            v.currentTime = $timestamp;
           }
           v.pause();
         });
       })();
     """;
-
     _webViewController!.runJavaScript(js);
 
     Future.delayed(const Duration(milliseconds: 400), () {
@@ -578,24 +794,25 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
 
   void _handleViewerSync(Map<String, dynamic> data) {
     if (_isHost || _webViewController == null) return;
-    final timestamp = (data['timestamp'] as num?)?.toDouble() ?? (data['position'] as num?)?.toDouble() ?? 0.0;
-    final shouldPlay = data['isPlaying'] as bool? ?? false;
 
-    _safeSet(() {
-      _syncBadgeText = 'Syncing...';
-      _isSynced = false;
-    });
+    final url = data['url'] as String?;
+    if (url != null && url.isNotEmpty && url != _videoUrl) {
+      _videoUrl = url;
+      _browserAddressController.text = url;
+      _webViewController!.loadRequest(Uri.parse(url));
+    }
+
+    final timestamp = (data['timestamp'] as num?)?.toDouble() ?? (data['position'] as num?)?.toDouble() ?? 0.0;
+    final isPlaying = data['isPlaying'] as bool? ?? false;
 
     final js = """
       (function() {
         var videos = document.querySelectorAll('video');
-        var t = $timestamp;
-        var play = $shouldPlay;
         videos.forEach(function(v) {
-          if (t > 0) {
-            v.currentTime = t;
+          if (Math.abs(v.currentTime - $timestamp) > 2) {
+            v.currentTime = $timestamp;
           }
-          if (play) {
+          if ($isPlaying) {
             v.play();
           } else {
             v.pause();
@@ -603,15 +820,23 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
         });
       })();
     """;
-
     _webViewController!.runJavaScript(js);
 
-    Future.delayed(const Duration(milliseconds: 500), () {
-      _safeSet(() {
-        _syncBadgeText = 'Synced (${timestamp.toStringAsFixed(0)}s)';
-        _isSynced = true;
-      });
+    _safeSet(() {
+      _syncBadgeText = 'Synced';
+      _isSynced = true;
     });
+  }
+
+  void _handleViewerUrlChanged(Map<String, dynamic> data) {
+    if (_isHost || _webViewController == null) return;
+    final url = data['url'] as String?;
+    if (url != null && url.isNotEmpty && url != _videoUrl) {
+      _videoUrl = url;
+      _browserAddressController.text = url;
+      _webViewController!.loadRequest(Uri.parse(url));
+      _showSnack('Host navigated to new page');
+    }
   }
 
   // ── Chat Handlers ─────────────────────────────────────────────────────────
@@ -633,29 +858,33 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     _safeSet(() {
       _chatMessages.add({
         'sender': 'You',
-        'text': text,
-        'timestamp': DateTime.now(),
+        'message': text,
+        'isMe': true,
+        'time': DateTime.now(),
       });
+      _chatController.clear();
     });
 
-    _chatController.clear();
     _scrollChatToBottom();
   }
 
   void _handleIncomingChat(Map<String, dynamic> data) {
-    final sender = data['sender'] as String? ?? (_isHost ? 'Viewer' : 'Host');
-    final message = data['message'] as String? ?? '';
+    final text = data['message'] as String? ?? '';
+    final sender = data['sender'] as String? ?? 'Friend';
 
-    if (message.isNotEmpty) {
-      _safeSet(() {
-        _chatMessages.add({
-          'sender': sender,
-          'text': message,
-          'timestamp': DateTime.now(),
-        });
+    _safeSet(() {
+      _chatMessages.add({
+        'sender': sender,
+        'message': text,
+        'isMe': false,
+        'time': DateTime.now(),
       });
-      _scrollChatToBottom();
+    });
+
+    if (!_chatOpen) {
+      _showSnack('$sender: $text');
     }
+    _scrollChatToBottom();
   }
 
   void _scrollChatToBottom() {
@@ -663,31 +892,25 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
       if (_chatScroll.hasClients) {
         _chatScroll.animateTo(
           _chatScroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
+          duration: const Duration(milliseconds: 250),
           curve: Curves.easeOut,
         );
       }
     });
   }
 
-  // ── Leave & Clean Up ──────────────────────────────────────────────────────
+  // ── Exit & Cleanup ────────────────────────────────────────────────────────
   Future<void> _leaveRoom({bool isDisposing = false}) async {
-    _controlsTimer?.cancel();
-
-    if (_roomCode.isNotEmpty) {
-      try {
-        if (_isHost) {
-          await _firestoreService.deleteRoom(_roomCode);
-        } else {
-          await _firestoreService.decrementViewerCount(_roomCode);
-        }
-      } catch (e) {
-        debugPrint('Error leaving Firestore room: $e');
+    try {
+      if (_isHost && _roomCode.isNotEmpty) {
+        await _firestoreService.deleteRoom(_roomCode);
+      } else if (!_isHost && _roomCode.isNotEmpty) {
+        await _firestoreService.decrementViewerCount(_roomCode);
       }
-    }
+    } catch (_) {}
 
-    await _socketSubscription?.cancel();
-    await _socket?.sink.close();
+    _socketSubscription?.cancel();
+    _socket?.sink.close();
     _socket = null;
     _socketSubscription = null;
 
@@ -696,20 +919,48 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     }
   }
 
-  Future<void> _pasteFromClipboard() async {
+  void _confirmLeaveDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: Text(_isHost ? 'End Private Stream?' : 'Leave Stream?', style: const TextStyle(color: Colors.white)),
+        content: Text(
+          _isHost
+              ? 'This will close the stream for all viewers.'
+              : 'Are you sure you want to exit this watch room?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _leaveRoom();
+            },
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFFF1744)),
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _pasteFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data != null && data.text != null && data.text!.isNotEmpty) {
-      _urlController.text = data.text!.trim();
-      _showSnack('Pasted URL from clipboard');
-    } else {
-      _showSnack('Clipboard is empty');
+    if (data?.text != null && data!.text!.isNotEmpty) {
+      _urlController.text = data.text!;
+      _showSnack('Pasted link from clipboard');
     }
   }
 
-  // ── Build UI ──────────────────────────────────────────────────────────────
+  // ── BUILD ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    if (_isRoomCreated && _webViewController != null) {
+    if (_isRoomCreated) {
       return _buildActiveStreamingScreen();
     }
 
@@ -718,13 +969,19 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0A0F),
         elevation: 0,
-        title: Text(
-          _isHost ? 'Host Web Stream' : 'Joining Web Party',
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.lock_rounded, color: Color(0xFF6C63FF), size: 20),
+            const SizedBox(width: 8),
+            Text(
+              _isHost ? 'Private Cloud & Web Stream' : 'Join Private Stream',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ],
         ),
       ),
       body: _isHost ? _buildHostSetupBody() : _buildViewerLoadingBody(),
@@ -734,17 +991,134 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   // ── Host Setup Body ───────────────────────────────────────────────────────
   Widget _buildHostSetupBody() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // DRM Warning Banner
-          _buildDrmWarningBanner(),
-          const SizedBox(height: 24),
+          // Banner
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF2E1A47), Color(0xFF1A1A2E)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF6C63FF).withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.lock_rounded, color: Color(0xFF6C63FF), size: 26),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Private Stream (Max 8 People)',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Stream Google Drive, Cloud links, or 18+ adult web video in a strictly private room with PIN protection.',
+                        style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 12, height: 1.3),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 22),
+
+          // 🔞 18+ Adult Content Toggle Card
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: _isAdultContent ? const Color(0xFF2D1118) : const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: _isAdultContent ? const Color(0xFFFF1744) : Colors.white.withOpacity(0.08),
+                width: _isAdultContent ? 1.5 : 1.0,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: _isAdultContent
+                        ? const Color(0xFFFF1744).withOpacity(0.2)
+                        : Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    Icons.explicit_rounded,
+                    color: _isAdultContent ? const Color(0xFFFF1744) : Colors.white60,
+                    size: 26,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text(
+                            '18+ Adult Video Content',
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF1744),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('18+', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _isAdultContent
+                            ? 'Strictly Private: Hidden from public discovery. Room PIN required.'
+                            : 'Enable if streaming adult sites or mature content.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _isAdultContent ? const Color(0xFFFF8A80) : Colors.white.withOpacity(0.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: _isAdultContent,
+                  activeColor: const Color(0xFFFF1744),
+                  onChanged: (val) {
+                    _safeSet(() {
+                      _isAdultContent = val;
+                      if (val) _isPublic = false; // 18+ is ALWAYS strictly private
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
 
           // URL Input
           const Text(
-            'Enter video URL (Netflix, Prime, YouTube, etc.)',
+            'Website or Video Link',
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white70),
           ),
           const SizedBox(height: 8),
@@ -752,8 +1126,8 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
             controller: _urlController,
             style: const TextStyle(color: Colors.white, fontSize: 14),
             decoration: InputDecoration(
-              hintText: 'https://www.netflix.com or https://youtube.com',
-              prefixIcon: const Icon(Icons.language_rounded, color: Color(0xFF6C63FF)),
+              hintText: 'Google Drive, Dropbox, direct MP4, or web URL...',
+              prefixIcon: const Icon(Icons.link_rounded, color: Color(0xFF6C63FF)),
               suffixIcon: IconButton(
                 icon: const Icon(Icons.content_paste_rounded, color: Color(0xFF6C63FF)),
                 tooltip: 'Paste from clipboard',
@@ -764,18 +1138,25 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
           ),
           const SizedBox(height: 12),
 
-          // Preset Quick Selection Chips
+          // Preset Chips (Drive, Dropbox, Direct MP4, 18+ Sites)
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: _popularPresets.map((preset) {
+            children: _cloudPresets.map((preset) {
               return ActionChip(
+                avatar: Icon(preset['icon'] as IconData, size: 16, color: preset['color'] as Color),
                 backgroundColor: const Color(0xFF1A1A2E),
-                side: BorderSide(color: const Color(0xFF6C63FF).withOpacity(0.3)),
-                label: Text(preset['name']!, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                side: BorderSide(color: (preset['color'] as Color).withOpacity(0.35)),
+                label: Text(
+                  preset['name'] as String,
+                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+                ),
                 onPressed: () {
-                  _urlController.text = preset['url']!;
-                  _showSnack('Selected ${preset['name']}');
+                  _urlController.text = preset['url'] as String;
+                  if (preset['name'] == '18+ Adult Video') {
+                    _safeSet(() => _isAdultContent = true);
+                  }
+                  _showSnack(preset['hint'] as String);
                 },
               );
             }).toList(),
@@ -791,57 +1172,117 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
           TextField(
             controller: _titleController,
             style: const TextStyle(color: Colors.white, fontSize: 14),
-            decoration: const InputDecoration(
-              hintText: 'e.g. Anime Night, Movie Watch Party...',
-              prefixIcon: Icon(Icons.title_rounded, color: Color(0xFF6C63FF)),
-              fillColor: Color(0xFF1A1A2E),
+            decoration: InputDecoration(
+              hintText: _isAdultContent ? '🔞 Private 18+ Watch Party' : 'e.g. Movie Stream, Drive Video...',
+              prefixIcon: const Icon(Icons.title_rounded, color: Color(0xFF6C63FF)),
+              fillColor: const Color(0xFF1A1A2E),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
 
-          // Public/Private Switch Card
+          // Max Viewers Selector (Max 8 people)
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: const Color(0xFF1A1A2E),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.08)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.group_rounded, color: Color(0xFF6C63FF), size: 20),
+                        SizedBox(width: 8),
+                        Text('Room Capacity Limit', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF6C63FF).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text('$_maxViewers People Max', style: const TextStyle(color: Color(0xFFA78BFA), fontWeight: FontWeight.bold, fontSize: 13)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [2, 4, 6, 8].map((cap) {
+                    final isSelected = _maxViewers == cap;
+                    return Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: ChoiceChip(
+                          label: Text('$cap', style: TextStyle(color: isSelected ? Colors.white : Colors.white60, fontWeight: FontWeight.bold)),
+                          selected: isSelected,
+                          selectedColor: const Color(0xFF6C63FF),
+                          backgroundColor: const Color(0xFF0A0A0F),
+                          side: BorderSide(color: isSelected ? const Color(0xFF6C63FF) : Colors.white12),
+                          onSelected: (_) => _safeSet(() => _maxViewers = cap),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Capped at 8 people to ensure butter-smooth synchronized playback & privacy.',
+                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Security PIN / Passcode
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(color: Colors.white.withOpacity(0.08)),
             ),
             child: Row(
               children: [
-                Icon(
-                  _isPublic ? Icons.public_rounded : Icons.lock_outline_rounded,
-                  color: const Color(0xFF6C63FF),
-                  size: 24,
-                ),
+                const Icon(Icons.pin_rounded, color: Color(0xFF6C63FF), size: 24),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _isPublic ? 'Public Stream' : 'Private Stream',
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
+                      const Text('Room Security PIN', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
                       const SizedBox(height: 2),
-                      Text(
-                        _isPublic ? 'Visible to everyone in discovery feed' : 'Only people with the code can join',
-                        style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.5)),
-                      ),
+                      Text('Friends must enter this 4-digit PIN to join', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
                     ],
                   ),
                 ),
-                Switch(
-                  value: _isPublic,
-                  activeColor: const Color(0xFF6C63FF),
-                  onChanged: (val) => _safeSet(() => _isPublic = val),
+                SizedBox(
+                  width: 90,
+                  child: TextField(
+                    controller: _passcodeController,
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    maxLength: 4,
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 3),
+                    decoration: const InputDecoration(
+                      counterText: '',
+                      contentPadding: EdgeInsets.symmetric(vertical: 8),
+                      fillColor: Color(0xFF0A0A0F),
+                    ),
+                  ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 36),
+          const SizedBox(height: 32),
 
-          // Open & Host Button
+          // Start Stream Button
           SizedBox(
             width: double.infinity,
             height: 54,
@@ -853,15 +1294,20 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : const Icon(Icons.cast_connected_rounded),
-              label: Text(_isLoading ? 'CREATING ROOM...' : 'OPEN & HOST'),
+                  : Icon(_isAdultContent ? Icons.lock_open_rounded : Icons.cast_connected_rounded),
+              label: Text(
+                _isLoading
+                    ? 'STARTING STREAM...'
+                    : (_isAdultContent ? 'START 18+ PRIVATE STREAM' : 'START PRIVATE STREAM'),
+                style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5),
+              ),
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF6C63FF),
+                backgroundColor: _isAdultContent ? const Color(0xFFFF1744) : const Color(0xFF6C63FF),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 30),
         ],
       ),
     );
@@ -897,289 +1343,352 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
     );
   }
 
-  // ── DRM Warning Banner ────────────────────────────────────────────────────
-  Widget _buildDrmWarningBanner() {
-    if (!_showDrmBanner) return const SizedBox.shrink();
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2E1C0C),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.orangeAccent.withOpacity(0.35)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 24),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Text(
-              'DRM-protected sites (Netflix, Prime) may show a black screen on some devices. This is a device limitation.',
-              style: TextStyle(color: Color(0xFFFFD180), fontSize: 12, height: 1.4),
-            ),
-          ),
-          IconButton(
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            icon: const Icon(Icons.close_rounded, color: Colors.orangeAccent, size: 18),
-            onPressed: () => _safeSet(() => _showDrmBanner = false),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Active Streaming Screen (WebView + Overlay Bar + Chat) ────────────────
+  // ── Active Streaming Screen (In-App Browser + Sync Overlay + Chat) ─────────
   Widget _buildActiveStreamingScreen() {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0F),
       body: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            // 1. Full WebView
-            GestureDetector(
-              onTap: _toggleControls,
-              behavior: HitTestBehavior.translucent,
-              child: Column(
+            // 1. Browser Navigation Top Bar
+            _buildBrowserTopBar(),
+
+            if (_isWebLoading)
+              LinearProgressIndicator(
+                value: _webLoadingProgress / 100.0,
+                backgroundColor: const Color(0xFF0A0A0F),
+                valueColor: AlwaysStoppedAnimation<Color>(_isAdultContent ? const Color(0xFFFF1744) : const Color(0xFF6C63FF)),
+                minHeight: 2,
+              ),
+
+            // 2. WebView Container
+            Expanded(
+              child: Stack(
                 children: [
-                  if (_isWebLoading)
-                    LinearProgressIndicator(
-                      value: _webLoadingProgress / 100.0,
-                      backgroundColor: const Color(0xFF0A0A0F),
-                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF6C63FF)),
+                  if (_webViewController != null)
+                    WebViewWidget(controller: _webViewController!),
+
+                  // Chat Panel Overlay (if open)
+                  if (_chatOpen)
+                    Positioned.fill(
+                      child: Container(
+                        color: const Color(0xFF0A0A0F).withOpacity(0.95),
+                        child: _buildChatPanel(),
+                      ),
                     ),
-                  Expanded(
-                    child: WebViewWidget(controller: _webViewController!),
+
+                  // Floating Video Sniffer & Sync Bar (Bottom)
+                  Positioned(
+                    left: 12,
+                    right: 12,
+                    bottom: 12,
+                    child: _buildFloatingSyncController(),
                   ),
                 ],
               ),
             ),
-
-            // 2. Overlay Sync Controls Bar at Top
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 250),
-              curve: Curves.easeOut,
-              top: _controlsVisible ? 0 : -140,
-              left: 0,
-              right: 0,
-              child: _buildTopOverlayControlsBar(),
-            ),
-
-            // 3. Chat Panel Overlay (Drawer/Sheet style)
-            if (_chatOpen)
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                height: MediaQuery.of(context).size.height * 0.55,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0A0A0F),
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.8),
-                        blurRadius: 20,
-                        offset: const Offset(0, -4),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    children: [
-                      // Header
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              'Party Chat (${_chatMessages.length})',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.close_rounded, color: Colors.white70),
-                              onPressed: () => _safeSet(() => _chatOpen = false),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Divider(height: 1, color: Colors.white12),
-                      Expanded(child: _buildChatPanel()),
-                    ],
-                  ),
-                ),
-              ),
           ],
         ),
       ),
     );
   }
 
-  // ── Top Overlay Controls Bar ──────────────────────────────────────────────
-  Widget _buildTopOverlayControlsBar() {
+  // ── In-App Browser Navigation Top Bar ─────────────────────────────────────
+  Widget _buildBrowserTopBar() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0A0A0F).withOpacity(0.92),
-        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.1))),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.6),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      color: const Color(0xFF141424),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          // Top row: Back, Room Title, Room Code, Chat Toggle
           Row(
             children: [
+              // Close / Leave Button
               IconButton(
-                icon: const Icon(Icons.close_rounded, color: Colors.white),
+                icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
                 onPressed: _confirmLeaveDialog,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
               ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _roomTitle,
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Row(
-                      children: [
-                        FadeTransition(
-                          opacity: _pulseAnim,
-                          child: Container(
-                            width: 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: _isSynced ? Colors.greenAccent : Colors.amberAccent,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          _syncBadgeText,
-                          style: TextStyle(
-                            color: _isSynced ? Colors.greenAccent : Colors.amberAccent,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+              const SizedBox(width: 8),
 
-              // Room Code Chip
-              GestureDetector(
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: _roomCode));
-                  _showSnack('Room code $_roomCode copied!');
-                },
+              // Back
+              IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white60, size: 16),
+                onPressed: () => _webViewController?.goBack(),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+              const SizedBox(width: 8),
+
+              // Forward
+              IconButton(
+                icon: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white60, size: 16),
+                onPressed: () => _webViewController?.goForward(),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+              const SizedBox(width: 10),
+
+              // URL Display / Search Bar
+              Expanded(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1A1A2E),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.4)),
+                    color: const Color(0xFF0A0A0F),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _isAdultContent ? const Color(0xFFFF1744).withOpacity(0.5) : const Color(0xFF6C63FF).withOpacity(0.3),
+                    ),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.vpn_key_rounded, size: 14, color: Color(0xFF6C63FF)),
+                      Icon(
+                        _isAdultContent ? Icons.explicit_rounded : Icons.lock_rounded,
+                        color: _isAdultContent ? const Color(0xFFFF1744) : const Color(0xFF6C63FF),
+                        size: 16,
+                      ),
                       const SizedBox(width: 6),
-                      Text(
-                        _roomCode,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 12,
-                          letterSpacing: 2,
+                      Expanded(
+                        child: TextField(
+                          controller: _browserAddressController,
+                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                          decoration: const InputDecoration(
+                            border: InputBorder.none,
+                            isDense: true,
+                            contentPadding: EdgeInsets.zero,
+                            hintText: 'Search or enter video URL...',
+                            hintStyle: TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                          onSubmitted: (val) {
+                            if (val.trim().isNotEmpty) {
+                              final f = _formatUrl(val.trim());
+                              _webViewController?.loadRequest(Uri.parse(f));
+                            }
+                          },
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      const Icon(Icons.copy_rounded, size: 12, color: Colors.white54),
+                      IconButton(
+                        icon: const Icon(Icons.refresh_rounded, color: Colors.white60, size: 18),
+                        onPressed: () => _webViewController?.reload(),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
                     ],
                   ),
                 ),
               ),
               const SizedBox(width: 8),
 
-              // Chat button
-              IconButton(
-                icon: Badge(
-                  isLabelVisible: _chatMessages.isNotEmpty,
-                  label: Text('${_chatMessages.length}'),
-                  child: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFF6C63FF)),
-                ),
-                onPressed: () => _safeSet(() => _chatOpen = !_chatOpen),
+              // Chat Toggle
+              Stack(
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      _chatOpen ? Icons.videocam_rounded : Icons.chat_bubble_outline_rounded,
+                      color: const Color(0xFF6C63FF),
+                      size: 22,
+                    ),
+                    onPressed: () => _safeSet(() => _chatOpen = !_chatOpen),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                  if (_chatMessages.isNotEmpty && !_chatOpen)
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(color: Color(0xFFFF1744), shape: BoxShape.circle),
+                        child: Text(
+                          '${_chatMessages.length}',
+                          style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ],
           ),
-
           const SizedBox(height: 6),
 
-          // Bottom row: Host / Viewer Sync transport buttons
+          // Stream Info Bar: Room Code, PIN, Viewers Count (Max 8)
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  if (_isAdultContent)
+                    Container(
+                      margin: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                      decoration: BoxDecoration(color: const Color(0xFFFF1744), borderRadius: BorderRadius.circular(4)),
+                      child: const Text('18+ PRIVATE', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                    ),
+                  GestureDetector(
+                    onTap: () {
+                      Clipboard.setData(ClipboardData(text: _roomCode));
+                      _showSnack('Room code copied: $_roomCode');
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF6C63FF).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.copy_rounded, color: Color(0xFFA78BFA), size: 12),
+                          const SizedBox(width: 4),
+                          Text('Room: $_roomCode', style: const TextStyle(color: Color(0xFFA78BFA), fontSize: 11, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_passcode.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text('PIN: $_passcode', style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ],
+              ),
+
+              // Viewer Capacity Badge (Max 8 People)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.people_rounded, color: Colors.greenAccent, size: 13),
+                    const SizedBox(width: 4),
+                    Text('$_viewerCount/$_maxViewers People', style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Floating Video Sniffer & Playback Sync Controls ───────────────────────
+  Widget _buildFloatingSyncController() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141424).withOpacity(0.92),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: _isAdultContent ? const Color(0xFFFF1744).withOpacity(0.4) : const Color(0xFF6C63FF).withOpacity(0.4),
+        ),
+        boxShadow: const [
+          BoxShadow(color: Colors.black87, blurRadius: 16, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              FadeTransition(
+                opacity: _pulseAnim,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: _hasDetectedVideo ? Colors.greenAccent : const Color(0xFF6C63FF),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _hasDetectedVideo
+                      ? 'Video active (${_detectedVideoTime.toStringAsFixed(1)}s)'
+                      : 'Watching web stream ($_viewerCount/$_maxViewers people)',
+                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_isHost)
+                TextButton.icon(
+                  onPressed: _hostSyncCurrentUrl,
+                  icon: const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF6C63FF)),
+                  label: const Text('Sync Page', style: TextStyle(color: Color(0xFF6C63FF), fontSize: 11, fontWeight: FontWeight.bold)),
+                  style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), visualDensity: VisualDensity.compact),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+
+          // Host Play / Pause / Match Time buttons
+          Row(
             children: [
               if (_isHost) ...[
-                // Play Button
-                FilledButton.tonalIcon(
-                  onPressed: _hostPlay,
-                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                  label: const Text('Play'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF1A1A2E),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _hostPlay,
+                    icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                    label: const Text('Play All', style: TextStyle(fontSize: 12)),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF6C63FF),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      visualDensity: VisualDensity.compact,
+                    ),
                   ),
                 ),
-                // Pause Button
-                FilledButton.tonalIcon(
-                  onPressed: _hostPause,
-                  icon: const Icon(Icons.pause_rounded, size: 18),
-                  label: const Text('Pause'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF1A1A2E),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _hostPause,
+                    icon: const Icon(Icons.pause_rounded, size: 18),
+                    label: const Text('Pause All', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Color(0xFF6C63FF)),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      visualDensity: VisualDensity.compact,
+                    ),
                   ),
                 ),
-                // Sync Now button
-                FilledButton.icon(
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
                   onPressed: _hostManualSync,
-                  icon: const Icon(Icons.sync_rounded, size: 18),
-                  label: const Text('Sync Now'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  icon: const Icon(Icons.fast_forward_rounded, size: 18),
+                  tooltip: 'Match Timestamps',
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E1E34),
+                    visualDensity: VisualDensity.compact,
                   ),
                 ),
               ] else ...[
-                // Viewer Sync Now button
-                FilledButton.icon(
-                  onPressed: () {
-                    _safeSet(() => _syncBadgeText = 'Syncing...');
-                    _send({'type': 'request_sync'});
-                    _showSnack('Requested host sync');
-                    Future.delayed(const Duration(seconds: 1), () {
-                      _safeSet(() => _syncBadgeText = 'Synced');
-                    });
-                  },
-                  icon: const Icon(Icons.sync_rounded, size: 18),
-                  label: const Text('Sync with Host'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    alignment: Alignment.center,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.sync_rounded, color: Colors.greenAccent, size: 16),
+                        const SizedBox(width: 6),
+                        Text('Playback synchronized with Host', style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12)),
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -1194,56 +1703,50 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
   Widget _buildChatPanel() {
     return Column(
       children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: const BoxDecoration(
+            color: Color(0xFF141424),
+            border: Border(bottom: BorderSide(color: Colors.white12)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Room Chat (${_chatMessages.length})', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+              IconButton(
+                icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                onPressed: () => _safeSet(() => _chatOpen = false),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: _chatMessages.isEmpty
               ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.chat_bubble_outline_rounded, size: 40, color: Colors.white.withOpacity(0.15)),
-                      const SizedBox(height: 8),
-                      Text('No messages yet', style: TextStyle(color: Colors.white.withOpacity(0.3))),
-                    ],
-                  ),
+                  child: Text('No messages yet. Say hello!', style: TextStyle(color: Colors.white.withOpacity(0.4))),
                 )
               : ListView.builder(
                   controller: _chatScroll,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.all(16),
                   itemCount: _chatMessages.length,
-                  itemBuilder: (context, i) {
+                  itemBuilder: (ctx, i) {
                     final msg = _chatMessages[i];
-                    final isMe = msg['sender'] == 'You';
+                    final isMe = msg['isMe'] == true;
                     return Align(
                       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
                       child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 4),
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                         decoration: BoxDecoration(
-                          color: isMe ? const Color(0xFF6C63FF) : const Color(0xFF1A1A2E),
-                          borderRadius: BorderRadius.only(
-                            topLeft: const Radius.circular(16),
-                            topRight: const Radius.circular(16),
-                            bottomLeft: Radius.circular(isMe ? 16 : 4),
-                            bottomRight: Radius.circular(isMe ? 4 : 16),
-                          ),
+                          color: isMe ? const Color(0xFF6C63FF) : const Color(0xFF1E1E34),
+                          borderRadius: BorderRadius.circular(14),
                         ),
                         child: Column(
                           crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              msg['sender'] as String,
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.6),
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              msg['text'] as String,
-                              style: const TextStyle(color: Colors.white, fontSize: 14),
-                            ),
+                            if (!isMe)
+                              Text(msg['sender'] as String, style: const TextStyle(color: Color(0xFFA78BFA), fontSize: 11, fontWeight: FontWeight.bold)),
+                            Text(msg['message'] as String, style: const TextStyle(color: Colors.white, fontSize: 13)),
                           ],
                         ),
                       ),
@@ -1251,14 +1754,9 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
                   },
                 ),
         ),
-
-        // Chat Input Field
         Container(
           padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1A1A2E),
-            border: Border(top: BorderSide(color: Colors.white.withOpacity(0.06))),
-          ),
+          color: const Color(0xFF141424),
           child: Row(
             children: [
               Expanded(
@@ -1266,64 +1764,24 @@ class _WebMediaScreenState extends State<WebMediaScreen> with TickerProviderStat
                   controller: _chatController,
                   style: const TextStyle(color: Colors.white, fontSize: 14),
                   decoration: InputDecoration(
-                    hintText: 'Message party...',
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    filled: true,
+                    hintText: 'Type a message...',
                     fillColor: const Color(0xFF0A0A0F),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
                   ),
                   onSubmitted: (_) => _sendChatMessage(),
                 ),
               ),
               const SizedBox(width: 8),
-              GestureDetector(
-                onTap: _sendChatMessage,
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF6C63FF),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.send_rounded, color: Colors.white, size: 18),
-                ),
+              IconButton.filled(
+                onPressed: _sendChatMessage,
+                icon: const Icon(Icons.send_rounded, size: 20),
+                style: IconButton.styleFrom(backgroundColor: const Color(0xFF6C63FF)),
               ),
             ],
           ),
         ),
       ],
-    );
-  }
-
-  void _confirmLeaveDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text(_isHost ? 'End Web Stream?' : 'Leave Stream?'),
-        content: Text(
-          _isHost
-              ? 'Leaving will terminate the session for all connected viewers.'
-              : 'Are you sure you want to leave this session?',
-          style: TextStyle(color: Colors.white.withOpacity(0.7)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              _leaveRoom();
-            },
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text('Leave'),
-          ),
-        ],
-      ),
     );
   }
 }

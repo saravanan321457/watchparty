@@ -5,7 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'constants.dart';
+import 'models/room_model.dart';
+import 'services/firestore_service.dart';
 
 class HostScreen extends StatefulWidget {
   const HostScreen({super.key});
@@ -177,6 +180,24 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
             _roomId = data['roomId'];
             _status = 'Waiting for viewer...';
           });
+          try {
+            final user = FirebaseAuth.instance.currentUser;
+            await FirestoreService.instance.createRoom(
+              RoomModel(
+                id: _roomId,
+                roomCode: _roomId,
+                title: _videoName.isNotEmpty ? _videoName : 'Private Local Video',
+                hostId: user?.uid ?? '',
+                hostName: user?.displayName?.isNotEmpty == true ? user!.displayName! : 'Host',
+                hostAvatar: user?.photoURL,
+                videoType: 'LOCAL',
+                isPublic: false,
+                maxViewers: 2,
+                viewerCount: 1,
+                createdAt: DateTime.now(),
+              ),
+            );
+          } catch (_) {}
           break;
         case 'viewer_joined':
           _safeSet(() => _status = 'Viewer joining...');
@@ -273,8 +294,13 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
         await _pc!.addTrack(track, _videoStream!);
       }
       final offer = await _pc!.createOffer();
-      await _pc!.setLocalDescription(offer);
-      _send({'type': 'offer', 'sdp': offer.sdp});
+      var sdp = offer.sdp ?? '';
+      if (sdp.contains('m=video')) {
+        sdp = sdp.replaceFirst('c=IN IP4', 'b=AS:2500\r\nc=IN IP4');
+      }
+      final mungedOffer = RTCSessionDescription(sdp, offer.type);
+      await _pc!.setLocalDescription(mungedOffer);
+      _send({'type': 'offer', 'sdp': mungedOffer.sdp});
     } catch (e) {
       _safeSet(() => _status = 'Failed to start stream. Tap "Create Room" again.');
     }
@@ -312,6 +338,11 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _leaveRoom() async {
+    if (_roomId.isNotEmpty) {
+      try {
+        await FirestoreService.instance.deleteRoom(_roomId);
+      } catch (_) {}
+    }
     await _resetPeer();
     await _socketSubscription?.cancel();
     await _socket?.sink.close();
@@ -450,7 +481,42 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
                   const SizedBox(height: 8),
                   Text('Pick any MP4 from your device to stream',
                       style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 14)),
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 20),
+
+                  // Strictly Private P2P Notice Card
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E34),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.35)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.lock_rounded, color: Color(0xFF6C63FF), size: 22),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Strictly Private (Direct Peer-to-Peer)',
+                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                'Streams directly from your phone memory without cloud uploads. Best for 1-to-1 viewing (Max 2 viewers) for maximum speed and zero lag.',
+                                style: TextStyle(color: Colors.white70, fontSize: 11, height: 1.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
                   if (_videoName.isNotEmpty) ...[
                     Container(
                       width: double.infinity,
@@ -740,6 +806,56 @@ class _HostScreenState extends State<HostScreen> with TickerProviderStateMixin {
                     Clipboard.setData(ClipboardData(text: _roomId));
                     _showSnack('Code copied! Share it with your friend.');
                   },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Private P2P Status & Viewer Count Card
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.shield_outlined, color: Color(0xFF6C63FF), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Private Stream (Max 2 Viewers)',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _viewerConnected
+                            ? '1/2 Viewers connected — Private P2P active'
+                            : '0/2 Viewers connected — Waiting for friend',
+                        style: TextStyle(color: _viewerConnected ? Colors.greenAccent : Colors.white54, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _viewerConnected ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    _viewerConnected ? 'ONLINE' : 'WAITING',
+                    style: TextStyle(
+                      color: _viewerConnected ? Colors.greenAccent : Colors.orangeAccent,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ],
             ),

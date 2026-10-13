@@ -11,6 +11,8 @@ class RoomModel {
   final String? videoUrl;
   final bool isPublic;
   final int viewerCount;
+  final int maxViewers; // Default 8 max viewers
+  final bool isAdultContent; // 18+ sensitive adult content flag
   final DateTime createdAt;
   final String? passcode;
   final bool isActive;
@@ -26,6 +28,8 @@ class RoomModel {
     this.videoUrl,
     this.isPublic = true,
     this.viewerCount = 0,
+    this.maxViewers = 8,
+    this.isAdultContent = false,
     required this.createdAt,
     this.passcode,
     this.isActive = true,
@@ -55,6 +59,8 @@ class RoomModel {
       videoUrl: map['videoUrl'] as String?,
       isPublic: map['isPublic'] as bool? ?? true,
       viewerCount: (map['viewerCount'] as num? ?? 0).toInt(),
+      maxViewers: (map['maxViewers'] as num? ?? 8).toInt(),
+      isAdultContent: map['isAdultContent'] as bool? ?? false,
       createdAt: parsedDate,
       passcode: map['passcode'] as String?,
       isActive: map['isActive'] as bool? ?? true,
@@ -78,6 +84,8 @@ class RoomModel {
       'videoUrl': videoUrl,
       'isPublic': isPublic,
       'viewerCount': viewerCount,
+      'maxViewers': maxViewers,
+      'isAdultContent': isAdultContent,
       'createdAt': Timestamp.fromDate(createdAt),
       'passcode': passcode,
       'isActive': isActive,
@@ -95,6 +103,8 @@ class RoomModel {
     String? videoUrl,
     bool? isPublic,
     int? viewerCount,
+    int? maxViewers,
+    bool? isAdultContent,
     DateTime? createdAt,
     String? passcode,
     bool? isActive,
@@ -110,6 +120,8 @@ class RoomModel {
       videoUrl: videoUrl ?? this.videoUrl,
       isPublic: isPublic ?? this.isPublic,
       viewerCount: viewerCount ?? this.viewerCount,
+      maxViewers: maxViewers ?? this.maxViewers,
+      isAdultContent: isAdultContent ?? this.isAdultContent,
       createdAt: createdAt ?? this.createdAt,
       passcode: passcode ?? this.passcode,
       isActive: isActive ?? this.isActive,

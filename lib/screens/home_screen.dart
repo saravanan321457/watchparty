@@ -182,6 +182,116 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  void _joinRoom(RoomModel room) {
+    // 1. Check capacity limit
+    if (room.viewerCount >= room.maxViewers) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: _surfaceColor,
+          title: const Row(
+            children: [
+              Icon(Icons.group_off_rounded, color: Colors.orangeAccent, size: 24),
+              SizedBox(width: 8),
+              Text('Room Full', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Text(
+            'This room has reached its maximum capacity of ${room.maxViewers} people.',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: FilledButton.styleFrom(backgroundColor: _accentPurple),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // 2. Check 18+ Adult Content Age Gate
+    if (room.isAdultContent) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Color(0xFFFF1744), size: 26),
+              SizedBox(width: 10),
+              Text('18+ Age Gate', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: const Text(
+            'This room contains 18+ Adult Content. You must be at least 18 years old to join.',
+            style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                if (room.isPublic && (room.passcode == null || room.passcode!.isEmpty)) {
+                  _navigateToRoom(room);
+                } else {
+                  _showPrivateRoomCodeDialog(room);
+                }
+              },
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFFFF1744)),
+              child: const Text('I am 18+ (Continue)'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // 3. Check Passcode
+    if (room.isPublic && (room.passcode == null || room.passcode!.isEmpty)) {
+      _navigateToRoom(room);
+    } else {
+      _showPrivateRoomCodeDialog(room);
+    }
+  }
+
+  void _navigateToRoom(RoomModel room) {
+    if (room.videoType == 'WEB') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => WebMediaScreen.viewer(
+            roomCode: room.roomCode,
+            videoUrl: room.videoUrl,
+          ),
+        ),
+      );
+    } else if (room.videoType == 'YOUTUBE') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => YouTubeSyncScreen(
+            roomCode: room.roomCode,
+            videoId: room.videoUrl,
+            isHost: false,
+          ),
+        ),
+      );
+    } else {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ViewerScreen(roomCode: room.roomCode),
+        ),
+      );
+    }
+  }
+
   void _showPrivateRoomCodeDialog(RoomModel room) {
     final codeController = TextEditingController();
     String? errorMessage;
@@ -272,13 +382,7 @@ class _HomeScreenState extends State<HomeScreen>
                       return;
                     }
                     Navigator.pop(ctx);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            ViewerScreen(roomCode: room.roomCode),
-                      ),
-                    );
+                    _navigateToRoom(room);
                   },
                   style: FilledButton.styleFrom(
                     backgroundColor: _accentPurple,
@@ -689,19 +793,7 @@ class _HomeScreenState extends State<HomeScreen>
               return _RoomCard(
                 room: room,
                 timeAgo: _formatTimeAgo(room.createdAt),
-                onJoin: () {
-                  if (room.isPublic) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            ViewerScreen(roomCode: room.roomCode),
-                      ),
-                    );
-                  } else {
-                    _showPrivateRoomCodeDialog(room);
-                  }
-                },
+                onJoin: () => _joinRoom(room),
               );
             },
           ),
@@ -847,15 +939,7 @@ class _HomeScreenState extends State<HomeScreen>
               return _RoomCard(
                 room: room,
                 timeAgo: _formatTimeAgo(room.createdAt),
-                onJoin: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          ViewerScreen(roomCode: room.roomCode),
-                    ),
-                  );
-                },
+                onJoin: () => _joinRoom(room),
               );
             },
           ),
@@ -1028,6 +1112,36 @@ class _RoomCard extends StatelessWidget {
                           ),
                         ),
 
+                        // 18+ Adult Badge (if applicable)
+                        if (room.isAdultContent)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF1744).withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: const Color(0xFFFF1744).withOpacity(0.7),
+                                width: 0.8,
+                              ),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.explicit_rounded, size: 12, color: Color(0xFFFF1744)),
+                                SizedBox(width: 3),
+                                Text(
+                                  '18+ ADULT',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFFFF1744),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
                         // Public / Private Badge
                         Container(
                           padding: const EdgeInsets.symmetric(
@@ -1083,22 +1197,22 @@ class _RoomCard extends StatelessWidget {
               ElevatedButton(
                 onPressed: onJoin,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: accentPurple,
+                  backgroundColor: room.viewerCount >= room.maxViewers ? Colors.grey[800] : accentPurple,
                   foregroundColor: Colors.white,
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
                   elevation: 4,
                   shadowColor: accentPurple.withOpacity(0.5),
                 ),
-                child: const Text(
-                  'JOIN',
-                  style: TextStyle(
+                child: Text(
+                  room.viewerCount >= room.maxViewers ? 'FULL' : 'JOIN',
+                  style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1,
-                    fontSize: 13,
+                    fontSize: 12,
                   ),
                 ),
               ),
@@ -1109,25 +1223,25 @@ class _RoomCard extends StatelessWidget {
           const Divider(height: 1, color: Color(0xFF2A2A4A)),
           const SizedBox(height: 10),
 
-          // Bottom row: 👁 viewerCount + time ago
+          // Bottom row: 👥 viewerCount/maxViewers + time ago
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Viewer count
+              // Viewer count & capacity limit
               Row(
                 children: [
-                  const Icon(
-                    Icons.visibility_rounded,
+                  Icon(
+                    Icons.people_rounded,
                     size: 16,
-                    color: Color(0xFF6C63FF),
+                    color: room.viewerCount >= room.maxViewers ? Colors.redAccent : const Color(0xFF6C63FF),
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    '${room.viewerCount} watching',
+                    '${room.viewerCount}/${room.maxViewers} people${room.viewerCount >= room.maxViewers ? ' (FULL)' : ''}',
                     style: TextStyle(
                       fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.white.withOpacity(0.75),
+                      fontWeight: FontWeight.w600,
+                      color: room.viewerCount >= room.maxViewers ? Colors.redAccent : Colors.white.withOpacity(0.75),
                     ),
                   ),
                 ],
