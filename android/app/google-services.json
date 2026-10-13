@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "516294105018",
+    "project_id": "watch-party-app-2026",
+    "storage_bucket": "watch-party-app-2026.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:516294105018:android:71edbf5e4d364abaee6f83",
+        "android_client_info": {
+          "package_name": "com.example.watch_party_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "516294105018-8be6smcfg7jlrghakk77o58usnralei3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCF25uS4FGXg8kIAjGYYwxHN1qJe54b58I"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "516294105018-8be6smcfg7jlrghakk77o58usnralei3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "516294105018-5j74gkvvbmp4eei6ape44h9c14usd63q.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.watchPartyApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

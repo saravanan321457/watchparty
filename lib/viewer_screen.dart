@@ -7,7 +7,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'constants.dart';
 
 class ViewerScreen extends StatefulWidget {
-  const ViewerScreen({super.key});
+  final String? roomCode;
+  const ViewerScreen({super.key, this.roomCode});
   @override
   State<ViewerScreen> createState() => _ViewerScreenState();
 }
@@ -49,6 +50,12 @@ class _ViewerScreenState extends State<ViewerScreen> with TickerProviderStateMix
   @override
   void initState() {
     super.initState();
+    if (widget.roomCode != null && widget.roomCode!.isNotEmpty) {
+      _roomController.text = widget.roomCode!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _joinRoom();
+      });
+    }
     _remoteRenderer.initialize();
     _pulseCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 0.5, end: 1.0).animate(

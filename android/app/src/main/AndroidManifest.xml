@@ -9,6 +9,7 @@
 <!-- File access for reading local videos (including large 2GB+ files) -->
 <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
 <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <application
         android:label="watch_together"
         android:name="${applicationName}"
