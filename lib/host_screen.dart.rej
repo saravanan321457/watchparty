@@ -1,0 +1,22 @@
+--- host_screen.dart
++++ host_screen.dart
+@@ -140,7 +140,7 @@
+         case 'viewer_left':
+           _safeSet(() {
+             _status = 'Waiting for viewer...';
+             _viewerConnected = false;
+           });
+-          await _resetPeer();
++          await _resetPeer(keepMedia: true);
+           break;
+--- /dev/null
++++ /dev/null
+@@ -231,7 +235,7 @@
+   Future<void> _leaveRoom() async {
+-    await _resetPeer();
++    await _resetPeer(keepMedia: false);
+     await _socketSubscription?.cancel();
+     await _socket?.sink.close();
+ 
+ 
+ 

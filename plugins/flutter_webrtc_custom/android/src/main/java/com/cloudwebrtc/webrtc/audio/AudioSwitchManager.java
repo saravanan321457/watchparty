@@ -93,7 +93,7 @@ public class AudioSwitchManager {
      * <br />
      * Note: Manual audio routing may not work appropriately when using non-default values.
      */
-    private int audioStreamType = AudioManager.STREAM_VOICE_CALL;
+    private int audioStreamType = AudioManager.STREAM_MUSIC;
 
     /**
      * The audio attribute usage type to use when requesting audio focus on devices O and beyond.
@@ -105,7 +105,7 @@ public class AudioSwitchManager {
      * <br />
      * Note: Manual audio routing may not work appropriately when using non-default values.
      */
-    private int audioAttributeUsageType = AudioAttributes.USAGE_VOICE_COMMUNICATION;
+    private int audioAttributeUsageType = AudioAttributes.USAGE_MEDIA;
 
     /**
      * The audio attribute content type to use when requesting audio focus on devices O and beyond.
@@ -117,7 +117,7 @@ public class AudioSwitchManager {
      * <br />
      * Note: Manual audio routing may not work appropriately when using non-default values.
      */
-    private int audioAttributeContentType = AudioAttributes.CONTENT_TYPE_SPEECH;
+    private int audioAttributeContentType = AudioAttributes.CONTENT_TYPE_MOVIE;
 
     /**
      * On certain Android devices, audio routing does not function properly and bluetooth microphones will not work

@@ -290,8 +290,9 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
       audioDeviceModuleBuilder.setUseHardwareAcousticEchoCanceler(false)
                         .setUseHardwareNoiseSuppressor(false)
                         .setUseStereoInput(true)
-                        .setUseStereoOutput(true)
-                        .setAudioSource(MediaRecorder.AudioSource.MIC);
+                        .setUseStereoOutput(true);
+      // Do NOT set AudioSource to MIC — our AudioBufferCallback injects
+      // MP4 PCM directly, so we never need real microphone hardware.
     } else {
       boolean useHardwareAudioProcessing = androidUseHardwareAudioProcessing && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
       boolean useLowLatency = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O;

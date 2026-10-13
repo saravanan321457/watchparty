@@ -8,6 +8,17 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await WebRTC.initialize(options: {
     'bypassVoiceProcessing': true,
+    'androidAudioConfiguration': {
+      // Tell Android this is media playback, NOT a phone call.
+      // This prevents AudioManager from switching to STREAM_VOICE_CALL mode
+      // which degrades audio quality by applying telephony processing.
+      'androidAudioMode': 'media',
+      'androidAudioFocusMode': 'gain',
+      'androidAudioStreamType': 'music',
+      'androidAudioAttributesUsageType': 'media',
+      'androidAudioAttributesContentType': 'movie',
+      'manageAudioFocus': true,
+    },
   });
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
